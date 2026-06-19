@@ -32,6 +32,7 @@ static uint8_t cache_next;
 static uint8_t readahead_data[READAHEAD_SECTORS][SECTOR_SIZE];
 static uint8_t info_cache_valid[FN_MAX_DEV];
 static nio_disk_info_t info_cache[FN_MAX_DEV];
+static uint8_t media_changed[FN_MAX_DEV];
 
 #ifdef OBSOLETE
 static cmdFrame_t cmd; // FIXME - make this shared with init.c?
@@ -177,13 +178,16 @@ static uint16_t handle_ioctl_buffer(SYSREQ far *req)
   case FUJI_IOCTL_GET_UNIT_MAP:
   {
     fuji_ioctl_unit_map far *map = (fuji_ioctl_unit_map far *) buffer;
+    uint8_t requested_unit;
     if (req->io.count < sizeof(*map))
       return ERROR_BIT | UNKNOWN_CMD;
     if (map->unit >= FN_MAX_DEV)
       return ERROR_BIT | UNKNOWN_UNIT;
 
+    requested_unit = map->unit;
     fill_query((fuji_ioctl_query far *) map, req->unit);
-    map->slot = nio_unit_slot[map->unit];
+    map->unit = requested_unit;
+    map->slot = nio_unit_slot[requested_unit];
     return OP_COMPLETE;
   }
 
@@ -199,6 +203,7 @@ static uint16_t handle_ioctl_buffer(SYSREQ far *req)
 
     cache_invalidate_unit(map->unit);
     nio_unit_slot[map->unit] = map->slot;
+    media_changed[map->unit] = 1;
     fill_query((fuji_ioctl_query far *) map, req->unit);
     return OP_COMPLETE;
   }
@@ -271,6 +276,13 @@ uint16_t Media_check_cmd(SYSREQ far *req)
   if (req->unit >= FN_MAX_DEV) {
     consolef("Invalid Media Check unit: %i\n", req->unit);
     return ERROR_BIT | UNKNOWN_UNIT;
+  }
+
+  if (media_changed[req->unit]) {
+    media_changed[req->unit] = 0;
+    info_cache_valid[req->unit] = 0;
+    req->media.return_info = -1;
+    return OP_COMPLETE;
   }
 
   if (!disk_info_cached(req->unit, &info))
