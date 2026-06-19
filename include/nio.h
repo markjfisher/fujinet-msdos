@@ -42,6 +42,8 @@ enum {
   NIO_DISK_CMD_INFO = 0x05,
   NIO_DISK_CMD_CLEAR_CHANGED = 0x06,
   NIO_DISK_CMD_CREATE = 0x07,
+  NIO_DISK_CMD_READ_SECTORS = 0x08,
+  NIO_DISK_CMD_WRITE_SECTORS = 0x09,
 };
 
 enum {
@@ -76,9 +78,15 @@ extern bool nio_disk_info(uint8_t slot, nio_disk_info_t far *info);
 extern bool nio_disk_read_sector(uint8_t slot, uint32_t lba,
                                  void far *buffer, uint16_t buffer_length,
                                  uint16_t far *bytes_read);
+extern bool nio_disk_read_sectors(uint8_t slot, uint32_t lba, uint16_t count,
+                                  void far *buffer, uint16_t buffer_length,
+                                  uint16_t far *bytes_read);
 extern bool nio_disk_write_sector(uint8_t slot, uint32_t lba,
                                   const void far *buffer, uint16_t buffer_length,
                                   uint16_t far *bytes_written);
+extern bool nio_disk_write_sectors(uint8_t slot, uint32_t lba, uint16_t count,
+                                   const void far *buffer, uint16_t buffer_length,
+                                   uint16_t far *bytes_written);
 extern bool nio_status_ok(uint8_t status);
 
 #endif /* _NIO_H */

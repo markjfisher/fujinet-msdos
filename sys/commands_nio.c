@@ -10,6 +10,9 @@
 #undef DEBUG
 
 #define SECTOR_SIZE     512
+#define MAX_BATCH_SECTORS 8
+#define READAHEAD_SECTORS 8
+#define CACHE_SECTORS 32
 
 extern void End_code(void);
 
@@ -21,6 +24,14 @@ static char nio_current_uri[FUJI_IOCTL_MAX_URI + 1];
 static char nio_display_path[FUJI_IOCTL_MAX_PATH + 1];
 static uint16_t nio_current_uri_len;
 static uint16_t nio_display_path_len;
+static uint8_t cache_valid[CACHE_SECTORS];
+static uint8_t cache_unit[CACHE_SECTORS];
+static uint32_t cache_lba[CACHE_SECTORS];
+static uint8_t cache_data[CACHE_SECTORS][SECTOR_SIZE];
+static uint8_t cache_next;
+static uint8_t readahead_data[READAHEAD_SECTORS][SECTOR_SIZE];
+static uint8_t info_cache_valid[FN_MAX_DEV];
+static nio_disk_info_t info_cache[FN_MAX_DEV];
 
 #ifdef OBSOLETE
 static cmdFrame_t cmd; // FIXME - make this shared with init.c?
@@ -47,6 +58,63 @@ static void fill_query(fuji_ioctl_query far *query, uint8_t unit)
   query->unit = unit;
   query->version = FUJI_IOCTL_VERSION;
   query->max_units = FN_MAX_DEV;
+}
+
+static int cache_find(uint8_t unit, uint32_t lba)
+{
+  uint8_t i;
+  for (i = 0; i < CACHE_SECTORS; i++) {
+    if (cache_valid[i] && cache_unit[i] == unit && cache_lba[i] == lba)
+      return i;
+  }
+  return -1;
+}
+
+static void cache_store(uint8_t unit, uint32_t lba, const uint8_t far *data)
+{
+  uint8_t idx = cache_next;
+  cache_valid[idx] = 1;
+  cache_unit[idx] = unit;
+  cache_lba[idx] = lba;
+  _fmemcpy(cache_data[idx], data, SECTOR_SIZE);
+  cache_next = (uint8_t) ((cache_next + 1) % CACHE_SECTORS);
+}
+
+static void cache_update_or_invalidate(uint8_t unit, uint32_t lba, const uint8_t far *data)
+{
+  int idx = cache_find(unit, lba);
+  if (idx >= 0) {
+    if (data)
+      _fmemcpy(cache_data[idx], data, SECTOR_SIZE);
+    else
+      cache_valid[idx] = 0;
+  }
+}
+
+static void cache_invalidate_unit(uint8_t unit)
+{
+  uint8_t i;
+  for (i = 0; i < CACHE_SECTORS; i++) {
+    if (cache_valid[i] && cache_unit[i] == unit)
+      cache_valid[i] = 0;
+  }
+  if (unit < FN_MAX_DEV)
+    info_cache_valid[unit] = 0;
+}
+
+static bool disk_info_cached(uint8_t unit, nio_disk_info_t far *info)
+{
+  if (unit >= FN_MAX_DEV)
+    return false;
+  if (info_cache_valid[unit]) {
+    _fmemcpy(info, &info_cache[unit], sizeof(*info));
+    return true;
+  }
+  if (!nio_disk_info(unit_to_diskservice_slot(unit), info))
+    return false;
+  _fmemcpy(&info_cache[unit], info, sizeof(*info));
+  info_cache_valid[unit] = 1;
+  return true;
 }
 
 static uint16_t handle_ioctl_buffer(SYSREQ far *req)
@@ -129,6 +197,7 @@ static uint16_t handle_ioctl_buffer(SYSREQ far *req)
     if (map->slot >= FN_MAX_DEV)
       return ERROR_BIT | BAD_REQ_LEN;
 
+    cache_invalidate_unit(map->unit);
     nio_unit_slot[map->unit] = map->slot;
     fill_query((fuji_ioctl_query far *) map, req->unit);
     return OP_COMPLETE;
@@ -204,7 +273,7 @@ uint16_t Media_check_cmd(SYSREQ far *req)
     return ERROR_BIT | UNKNOWN_UNIT;
   }
 
-  if (!nio_disk_info(unit_to_diskservice_slot(req->unit), &info))
+  if (!disk_info_cached(req->unit, &info))
     return ERROR_BIT | NOT_READY;
 
   if (!(info.flags & NIO_DISK_INFO_INSERTED))
@@ -221,6 +290,7 @@ uint16_t Build_bpb_cmd(SYSREQ far *req)
 {
   uint8_t far *buf;
   uint16_t bytes_read;
+  int cached;
 
 
   if (req->unit >= FN_MAX_DEV) {
@@ -230,10 +300,16 @@ uint16_t Build_bpb_cmd(SYSREQ far *req)
 
   // DOS gave us a buffer to use
   buf = req->bpb.buffer_ptr;
-  if (!nio_disk_read_sector(unit_to_diskservice_slot(req->unit), 0, buf, SECTOR_SIZE, &bytes_read)
-      || bytes_read < SECTOR_SIZE) {
-    consolef("FujiNet NIO BPB read fail\n");
-    return ERROR_BIT | READ_FAULT;
+  cached = cache_find(req->unit, 0);
+  if (cached >= 0) {
+    _fmemcpy(buf, cache_data[cached], SECTOR_SIZE);
+  } else {
+    if (!nio_disk_read_sector(unit_to_diskservice_slot(req->unit), 0, buf, SECTOR_SIZE, &bytes_read)
+        || bytes_read < SECTOR_SIZE) {
+      consolef("FujiNet NIO BPB read fail\n");
+      return ERROR_BIT | READ_FAULT;
+    }
+    cache_store(req->unit, 0, buf);
   }
 
   _fmemcpy(fn_bpb_pointers[req->unit], &buf[0x0b], sizeof(DOS_BPB));
@@ -267,7 +343,7 @@ uint16_t Ioctl_input_cmd(SYSREQ far *req)
 
 uint16_t Input_cmd(SYSREQ far *req)
 {
-  uint16_t idx;
+  uint16_t done = 0;
   uint32_t sector, sector_max;
   uint8_t far *buf = req->io.buffer_ptr;
   uint16_t bytes_read;
@@ -298,21 +374,55 @@ uint16_t Input_cmd(SYSREQ far *req)
   consolef("SECTOR: %i 0x%08lx %i SM: %i\n", req->length, sector, req->io.count, sector_max);
 #endif
 
-  for (idx = 0; idx < req->io.count; idx++, sector++) {
+  while (done < req->io.count) {
+    uint16_t remaining = req->io.count - done;
+    uint16_t batch = remaining > MAX_BATCH_SECTORS ? MAX_BATCH_SECTORS : remaining;
+    uint16_t fetch;
+    int cached;
+    uint16_t fill;
+
     if (sector >= sector_max) {
       consolef("FN Invalid sector read %li on %i\n", sector, req->unit);
       return ERROR_BIT | NOT_FOUND;
     }
 
-    if (!nio_disk_read_sector(unit_to_diskservice_slot(req->unit), sector,
-                              &buf[idx * SECTOR_SIZE], SECTOR_SIZE,
-                              &bytes_read) || bytes_read < SECTOR_SIZE)
+    cached = cache_find(req->unit, sector);
+    if (cached >= 0) {
+      _fmemcpy(&buf[done * SECTOR_SIZE], cache_data[cached], SECTOR_SIZE);
+      done++;
+      sector++;
+      continue;
+    }
+
+    if ((uint32_t) batch > (sector_max - sector))
+      batch = (uint16_t) (sector_max - sector);
+
+    fetch = batch;
+    if (fetch < READAHEAD_SECTORS)
+      fetch = READAHEAD_SECTORS;
+    if ((uint32_t) fetch > (sector_max - sector))
+      fetch = (uint16_t) (sector_max - sector);
+
+    if (!nio_disk_read_sectors(unit_to_diskservice_slot(req->unit), sector, fetch,
+                               readahead_data,
+                               (uint16_t) (fetch * SECTOR_SIZE),
+                               &bytes_read) ||
+        bytes_read < (uint16_t) (fetch * SECTOR_SIZE))
       break;
+
+    for (fill = 0; fill < fetch; fill++)
+      cache_store(req->unit, sector + fill, readahead_data[fill]);
+
+    _fmemcpy(&buf[done * SECTOR_SIZE], readahead_data,
+             (uint16_t) (batch * SECTOR_SIZE));
+
+    done += batch;
+    sector += batch;
   }
-  if (!idx)
+  if (!done)
     return ERROR_BIT | GENERAL_FAIL;
 
-  req->io.count = idx;
+  req->io.count = done;
   return OP_COMPLETE;
 }
 
@@ -334,7 +444,7 @@ uint16_t Input_flush_cmd(SYSREQ far *req)
 
 uint16_t Output_cmd(SYSREQ far *req)
 {
-  uint16_t idx;
+  uint16_t done = 0;
   uint32_t sector, sector_max;
   uint8_t far *buf = req->io.buffer_ptr;
   uint16_t bytes_written;
@@ -346,7 +456,7 @@ uint16_t Output_cmd(SYSREQ far *req)
     return ERROR_BIT | UNKNOWN_UNIT;
   }
 
-  if (!nio_disk_info(unit_to_diskservice_slot(req->unit), &info))
+  if (!disk_info_cached(req->unit, &info))
     return ERROR_BIT | NOT_READY;
 
   if (info.flags & NIO_DISK_INFO_READONLY)
@@ -366,21 +476,38 @@ uint16_t Output_cmd(SYSREQ far *req)
   consolef("WRITE SECTOR: %i 0x%08lx %i\n", req->length, sector, req->io.count);
 #endif
 
-  for (idx = 0; idx < req->io.count; idx++, sector++) {
+  while (done < req->io.count) {
+    uint16_t remaining = req->io.count - done;
+    uint16_t batch = remaining > MAX_BATCH_SECTORS ? MAX_BATCH_SECTORS : remaining;
+
     if (sector >= sector_max) {
       consolef("FN Invalid sector write %i on %i:\n", sector, req->unit);
       return ERROR_BIT | NOT_FOUND;
     }
+    if ((uint32_t) batch > (sector_max - sector))
+      batch = (uint16_t) (sector_max - sector);
 
-    if (!nio_disk_write_sector(unit_to_diskservice_slot(req->unit), sector,
-                               &buf[idx * SECTOR_SIZE], SECTOR_SIZE,
-                               &bytes_written) || bytes_written < SECTOR_SIZE)
+    if (!nio_disk_write_sectors(unit_to_diskservice_slot(req->unit), sector, batch,
+                                &buf[done * SECTOR_SIZE],
+                                (uint16_t) (batch * SECTOR_SIZE),
+                                &bytes_written) ||
+        bytes_written < (uint16_t) (batch * SECTOR_SIZE))
       break;
+
+    {
+      uint16_t fill;
+      for (fill = 0; fill < batch; fill++)
+        cache_update_or_invalidate(req->unit, sector + fill,
+                                   &buf[(done + fill) * SECTOR_SIZE]);
+    }
+
+    done += batch;
+    sector += batch;
   }
-  if (!idx)
+  if (!done)
     return ERROR_BIT | GENERAL_FAIL;
 
-  req->io.count = idx;
+  req->io.count = done;
   return OP_COMPLETE;
 }
 

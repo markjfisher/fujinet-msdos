@@ -7,7 +7,7 @@
 #include <string.h>
 
 #define NIO_TIMEOUT_SLOW (15 * 1000)
-#define NIO_MAX_RX       640
+#define NIO_MAX_RX       8192
 #define NIO_MAX_TX_PREFIX 32
 
 enum {
@@ -203,6 +203,37 @@ bool nio_disk_read_sector(uint8_t slot, uint32_t lba,
   return true;
 }
 
+bool nio_disk_read_sectors(uint8_t slot, uint32_t lba, uint16_t count,
+                           void far *buffer, uint16_t buffer_length,
+                           uint16_t far *bytes_read)
+{
+  uint8_t req[10];
+  nio_response_t nr;
+  uint16_t data_len;
+
+  req[0] = NIO_DISK_VERSION;
+  req[1] = slot;
+  put_u32le(&req[2], lba);
+  put_u16le(&req[6], count);
+  put_u16le(&req[8], buffer_length);
+
+  if (!nio_call(NIO_DEVICEID_DISK, NIO_DISK_CMD_READ_SECTORS,
+                req, sizeof(req), rx_payload, sizeof(rx_payload), &nr))
+    return false;
+  if (!nio_status_ok(nr.status) || nr.payload_length < 13 || rx_payload[0] != NIO_DISK_VERSION)
+    return false;
+
+  data_len = get_u16le(&rx_payload[11]);
+  if (data_len > buffer_length || nr.payload_length < (uint16_t) (13 + data_len))
+    return false;
+
+  if (buffer && data_len)
+    _fmemcpy(buffer, rx_payload + 13, data_len);
+  if (bytes_read)
+    *bytes_read = data_len;
+  return true;
+}
+
 bool nio_disk_write_sector(uint8_t slot, uint32_t lba,
                            const void far *buffer, uint16_t buffer_length,
                            uint16_t far *bytes_written)
@@ -263,6 +294,70 @@ bool nio_disk_write_sector(uint8_t slot, uint32_t lba,
       return false;
     if (bytes_written)
       *bytes_written = get_u16le(&resp[10]);
+  }
+
+  return true;
+}
+
+bool nio_disk_write_sectors(uint8_t slot, uint32_t lba, uint16_t count,
+                            const void far *buffer, uint16_t buffer_length,
+                            uint16_t far *bytes_written)
+{
+  uint8_t req_prefix[10];
+  uint8_t resp[16];
+  nio_response_t nr;
+
+  req_prefix[0] = NIO_DISK_VERSION;
+  req_prefix[1] = slot;
+  put_u32le(&req_prefix[2], lba);
+  put_u16le(&req_prefix[6], count);
+  put_u16le(&req_prefix[8], buffer_length);
+
+  {
+    nio_header_t *tx = (nio_header_t *) tx_prefix;
+    uint16_t checksum;
+    uint16_t rx_len;
+    uint16_t rx_payload_len;
+
+    tx->device = NIO_DEVICEID_DISK;
+    tx->command = NIO_DISK_CMD_WRITE_SECTORS;
+    tx->length = sizeof(*tx) + sizeof(req_prefix) + buffer_length;
+    tx->checksum = 0;
+    tx->fields = FUJI_FIELD_NONE;
+
+    checksum = nio_calc_checksum(tx, sizeof(*tx), 0);
+    checksum = nio_calc_checksum(req_prefix, sizeof(req_prefix), checksum);
+    checksum = nio_calc_checksum(buffer, buffer_length, checksum);
+    tx->checksum = (uint8_t) checksum;
+
+    port_putc(SLIP_END);
+    port_putbuf_slip(tx_prefix, sizeof(*tx));
+    port_putbuf_slip(req_prefix, sizeof(req_prefix));
+    if (buffer && buffer_length)
+      port_putbuf_slip(buffer, buffer_length);
+    port_putc(SLIP_END);
+
+    rx_len = port_getbuf_slip_dual(&rx_header, sizeof(rx_header),
+                                   resp, sizeof(resp), NIO_TIMEOUT_SLOW);
+    if (rx_len < sizeof(rx_header) || rx_len != rx_header.length)
+      return false;
+    rx_payload_len = rx_len - sizeof(rx_header);
+    checksum = rx_header.checksum;
+    rx_header.checksum = 0;
+    if ((uint8_t) nio_calc_checksum(resp, rx_payload_len,
+          nio_calc_checksum(&rx_header, sizeof(rx_header), 0)) != checksum)
+      return false;
+    if (rx_header.device != NIO_DEVICEID_DISK || rx_header.command != NIO_DISK_CMD_WRITE_SECTORS)
+      return false;
+    if ((rx_header.fields & 0x80) || (rx_header.fields & 0x07) != FUJI_FIELD_A1 || rx_payload_len < 1)
+      return false;
+
+    nr.status = resp[0];
+    nr.payload_length = rx_payload_len - 1;
+    if (!nio_status_ok(nr.status) || nr.payload_length < 13 || resp[1] != NIO_DISK_VERSION)
+      return false;
+    if (bytes_written)
+      *bytes_written = get_u16le(&resp[12]);
   }
 
   return true;
