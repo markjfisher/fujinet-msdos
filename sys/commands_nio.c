@@ -10,9 +10,9 @@
 #undef DEBUG
 
 #define SECTOR_SIZE     512
-#define MAX_BATCH_SECTORS 8
-#define READAHEAD_SECTORS 8
-#define CACHE_SECTORS 32
+#define MAX_BATCH_SECTORS 16
+#define READAHEAD_SECTORS 16
+#define CACHE_SECTORS 56
 
 extern void End_code(void);
 

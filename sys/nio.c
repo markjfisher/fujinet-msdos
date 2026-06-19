@@ -7,7 +7,7 @@
 #include <string.h>
 
 #define NIO_TIMEOUT_SLOW (15 * 1000)
-#define NIO_MAX_RX       8192
+#define NIO_MAX_RX       9216
 #define NIO_MAX_TX_PREFIX 32
 
 enum {
