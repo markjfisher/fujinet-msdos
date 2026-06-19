@@ -64,13 +64,13 @@ static uint16_t handle_ioctl_buffer(SYSREQ far *req)
 
   command = buffer[0];
 
+  if (req->io.count < 5)
+    return ERROR_BIT | UNKNOWN_CMD;
+
   if (command == FUJI_IOCTL_QUERY) {
     fill_query((fuji_ioctl_query far *) buffer, req->unit);
     return OP_COMPLETE;
   }
-
-  if (req->io.count < 5)
-    return ERROR_BIT | UNKNOWN_CMD;
 
   switch (command) {
   case FUJI_IOCTL_GET_STATE:
@@ -138,12 +138,39 @@ static uint16_t handle_ioctl_buffer(SYSREQ far *req)
   {
     fuji_ioctl_nio_call far *call = (fuji_ioctl_nio_call far *) buffer;
     nio_response_t response;
+    uint16_t uri_len;
+    uint16_t path_len;
+    uint16_t offset;
 
     if (req->io.count < sizeof(*call))
       return ERROR_BIT | UNKNOWN_CMD;
     if (call->request_len > FUJI_IOCTL_MAX_DATA ||
         call->response_len > FUJI_IOCTL_MAX_DATA)
       return ERROR_BIT | BAD_REQ_LEN;
+
+    if (call->device == 0x00 && call->nio_command == FUJI_IOCTL_SET_STATE) {
+      if (call->request_len < 4)
+        return ERROR_BIT | BAD_REQ_LEN;
+      uri_len = (uint16_t) call->data[0] | ((uint16_t) call->data[1] << 8);
+      path_len = (uint16_t) call->data[2] | ((uint16_t) call->data[3] << 8);
+      offset = 4;
+      if (uri_len > FUJI_IOCTL_MAX_URI || path_len > FUJI_IOCTL_MAX_PATH ||
+          call->request_len < (uint16_t) (offset + uri_len + path_len))
+        return ERROR_BIT | BAD_REQ_LEN;
+
+      nio_current_uri_len = uri_len;
+      nio_display_path_len = path_len;
+      _fmemset(nio_current_uri, 0, sizeof(nio_current_uri));
+      _fmemset(nio_display_path, 0, sizeof(nio_display_path));
+      _fmemcpy(nio_current_uri, &call->data[offset], nio_current_uri_len);
+      offset += uri_len;
+      _fmemcpy(nio_display_path, &call->data[offset], nio_display_path_len);
+
+      call->nio_status = NIO_STATUS_OK;
+      call->response_len = 0;
+      fill_query((fuji_ioctl_query far *) call, req->unit);
+      return OP_COMPLETE;
+    }
 
     if (!nio_call(call->device, call->nio_command,
                   call->data, call->request_len,
