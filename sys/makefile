@@ -2,7 +2,7 @@ TARGET  = fujinet.sys
 AS      = wasm -q
 ASFLAGS = -0 -mt -bt=DOS
 CC      = wcc -q
-CFLAGS  = -0 -bt=dos -ms -I../include -s -osh -zu $(CPPFLAGS)
+CFLAGS  = -0 -bt=dos -ms -I../include -s -osh -zu $(CPPFLAGS) $(TRANSPORT_CPPFLAGS)
 LD	= wlink OPTION quiet
 LDFLAGS = &
 	SYSTEM dos com &
@@ -15,7 +15,17 @@ LDFLAGS = &
 	OPTION MAP, NODEFAULTLIBS &
 	LIBPATH ../fujicom
 
-CFILES  = commands.c dispatch.c fujicom.c id8250.c init.c intf5.c print.c
+FUJINET_TRANSPORT =
+
+!if "$(FUJINET_TRANSPORT)" == "NIO"
+TRANSPORT_CPPFLAGS = -DFUJINET_TRANSPORT_NIO
+TRANSPORT_CFILES = commands_nio.c nio.c
+!else
+TRANSPORT_CPPFLAGS =
+TRANSPORT_CFILES = commands.c
+!endif
+
+CFILES  = $(TRANSPORT_CFILES) dispatch.c fujicom.c id8250.c init.c intf5.c print.c
 AFILES  = header.asm iwrap.asm portio.asm
 OBJS = $(CFILES:.c=.obj) $(AFILES:.asm=.obj)
 

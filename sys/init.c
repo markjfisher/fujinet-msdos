@@ -1,6 +1,9 @@
 #include "commands.h"
 #include "fujinet.h"
 #include "fujicom.h"
+#ifdef FUJINET_TRANSPORT_NIO
+#include "nio.h"
+#endif
 #include "portio.h"
 #include "id8250.h"
 #include "print.h"
@@ -54,7 +57,11 @@ extern void setf5(void);
 
 #pragma data_seg("_CODE")
 
+#ifdef FUJINET_TRANSPORT_NIO
+uint8_t probe_fujinet_nio();
+#else
 uint8_t get_fujinet_version();
+#endif
 uint8_t get_set_time(uint8_t set_flag);
 void check_uart();
 uint16_t parse_config(const uint8_t far *config_sys);
@@ -81,9 +88,13 @@ uint16_t Init_cmd(SYSREQ far *req)
   fujicom_init();
   check_uart();
 
+#ifdef FUJINET_TRANSPORT_NIO
+  err = probe_fujinet_nio();
+#else
   err = get_fujinet_version();
   if (!err)
     err = get_set_time(!getenv("NOTIME"));
+#endif
 
   // If get_ returned error, FujiNet is probably not connected
   if (err) {
@@ -130,6 +141,7 @@ uint16_t Init_cmd(SYSREQ far *req)
   return OP_COMPLETE;
 }
 
+#ifndef FUJINET_TRANSPORT_NIO
 /* Returns non-zero on error */
 uint8_t get_fujinet_version()
 {
@@ -152,6 +164,25 @@ uint8_t get_fujinet_version()
 
   return 0;
 }
+#endif
+
+#ifdef FUJINET_TRANSPORT_NIO
+/* Returns non-zero on error */
+uint8_t probe_fujinet_nio()
+{
+  nio_disk_info_t info;
+
+
+  if (!nio_disk_info(1, &info)) {
+    consolef("Unable to contact FujiNet NIO DiskService.\nAborted.\n");
+    return 1;
+  }
+
+  consolef("FujiNet NIO DiskService detected.\n");
+
+  return 0;
+}
+#endif
 
 /* Returns non-zero on error */
 uint8_t get_set_time(uint8_t set_flag)

@@ -74,6 +74,25 @@ make disk USE_GIT_REF=1  # same, but names the image fn-<git-hash>.img
 
 `make disk` requires [mtools](https://www.gnu.org/software/mtools/) (`mformat`, `mcopy`).
 
+### fujinet.sys Transport Builds
+
+The default `sys` build targets `fujinet-firmware`:
+
+```sh
+make -C sys
+```
+
+Build the experimental `fujinet-nio` driver explicitly with:
+
+```sh
+make -C sys FUJINET_TRANSPORT=NIO
+```
+
+The NIO build defines `FUJINET_TRANSPORT_NIO` and uses the clean NIO DiskService
+protocol. The default build does not compile the NIO command handlers. Both
+commands write `sys/fujinet.sys`, so keep or rename the artifact you need before
+building the other transport.
+
 ## Further Reading
 
 - [FUJICOM-Protocol.md](FUJICOM-Protocol.md) — RS-232 protocol specification (command frames, SLIP framing, pin assignments)
