@@ -32,6 +32,7 @@ UART_RBR_OFF	EQU	0		; Receiver Buffer Register (read)
 UART_THR_OFF	EQU	0		; Transmitter Holding Register (write)
 UART_IER_OFF	EQU	1		; Interrupt Enable Register
 UART_IIR_OFF	EQU	2		; Interrupt Identification Register
+UART_FCR_OFF	EQU	2		; FIFO Control Register (write)
 UART_LCR_OFF	EQU	3		; Line Control Register
 UART_MCR_OFF	EQU	4		; Modem Control Register
 UART_LSR_OFF	EQU	5		; Line Status Register
@@ -51,6 +52,11 @@ LCR_8N1		EQU	03h		; 8 data bits, no parity, 1 stop bit
 MCR_DTR		EQU	01h		; Data Terminal Ready
 MCR_RTS		EQU	02h		; Request To Send
 MCR_OUT2	EQU	08h		; OUT2 (enables interrupts on PC)
+
+	; FIFO Control Register bits (16550 and newer)
+FCR_ENABLE	EQU	01h		; Enable FIFOs
+FCR_CLEAR_RX	EQU	02h		; Clear receive FIFO
+FCR_CLEAR_TX	EQU	04h		; Clear transmit FIFO
 
 	; BIOS Data Area
 BIOS_DATA_SEG	EQU	40h

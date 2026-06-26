@@ -1,8 +1,8 @@
 
 ; FujiNet MS-DOS drivers
 ;
-; FUJI_PORT  - COM port: 1-4 - Uses default hardcoded address & irq, OR
-;                        Hex I/O address, followed by irq (e.g. FUJI_PORT=0x2f8,11)
+; FUJI_PORT  - COM port: 1-4, or hex I/O address (e.g. FUJI_PORT=0x2f8)
+;              An optional trailing irq is parsed but unused by polling I/O
 ;              Default: 1 (COM1)
 ; FUJI_BPS   - Baud rate (9600, 19200, 115200, etc.)
 ;              Default: 115200
