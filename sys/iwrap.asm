@@ -1,10 +1,23 @@
 _TEXT	segment word public 'CODE'
-	extern	intf5_:near
 
-	; Macro to create an interrupt wrapper for a given C function
-INTERRUPT MACRO func
-	PUBLIC func&vect_
-	func&vect_ PROC NEAR
+IFNDEF FUJINET_TRANSPORT_NIO
+	extern	intf5_:near
+ENDIF
+
+FUJIF5_DETECT_MAGIC	EQU	0F501h
+
+	PUBLIC intf5_vect_
+intf5_vect_ PROC NEAR
+	cmp	ax, 0
+	je	detect_
+
+IFDEF FUJINET_TRANSPORT_NIO
+	push	bp
+	mov	bp, sp
+	or	WORD PTR [bp+6], 1
+	pop	bp
+	iret
+ELSE
 	push	bx
 	push	cx
 	push	dx
@@ -18,7 +31,7 @@ INTERRUPT MACRO func
 	push	cs
 	pop	ds
 
-	call	func
+	call	intf5_
 
 	pop	es
 	pop	ds
@@ -29,10 +42,21 @@ INTERRUPT MACRO func
 	pop	cx
 	pop	bx
 	iret
-	func&vect_ ENDP
-ENDM
+ENDIF
 
-	INTERRUPT	intf5_
+detect_:
+	push	cs
+	pop	ds
+	mov	si, OFFSET fujif5_signature_
+	mov	ax, FUJIF5_DETECT_MAGIC
+	push	bp
+	mov	bp, sp
+	and	WORD PTR [bp+6], 0FFFEh
+	pop	bp
+	iret
+intf5_vect_ ENDP
+
+fujif5_signature_	DB	"FUJINET", 0
 
 _TEXT	ends
 

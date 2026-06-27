@@ -8,7 +8,9 @@
 #include "id8250.h"
 #include "print.h"
 #include "dispatch.h"
-#include <fuji_f5.h>
+#ifndef FUJINET_TRANSPORT_NIO
+#include <fuji_firmware.h>
+#endif
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -61,8 +63,8 @@ extern void setf5(void);
 uint8_t probe_fujinet_nio();
 #else
 uint8_t get_fujinet_version();
-#endif
 uint8_t get_set_time(uint8_t set_flag);
+#endif
 void check_uart();
 uint16_t parse_config(const uint8_t far *config_sys);
 void find_drive_letter(uint8_t num_units);
@@ -136,7 +138,7 @@ uint16_t Init_cmd(SYSREQ far *req)
   find_drive_letter(req->init.num_units);
 
   setf5();
-  consolef("INT F5 Functions installed.\n");
+  consolef("INT F5 detection installed.\n");
 
   return OP_COMPLETE;
 }
@@ -184,6 +186,7 @@ uint8_t probe_fujinet_nio()
 }
 #endif
 
+#ifndef FUJINET_TRANSPORT_NIO
 /* Returns non-zero on error */
 uint8_t get_set_time(uint8_t set_flag)
 {
@@ -225,6 +228,7 @@ uint8_t get_set_time(uint8_t set_flag)
 
   return 0;
 }
+#endif
 
 void check_uart()
 {

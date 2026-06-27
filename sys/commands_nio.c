@@ -303,6 +303,7 @@ uint16_t Build_bpb_cmd(SYSREQ far *req)
   uint8_t far *buf;
   uint16_t bytes_read;
   int cached;
+  nio_disk_info_t info;
 
 
   if (req->unit >= FN_MAX_DEV) {
@@ -312,6 +313,13 @@ uint16_t Build_bpb_cmd(SYSREQ far *req)
 
   // DOS gave us a buffer to use
   buf = req->bpb.buffer_ptr;
+
+  if (disk_info_cached(req->unit, &info) &&
+      !(info.flags & NIO_DISK_INFO_INSERTED)) {
+    req->bpb.table = MK_FP(getCS(), fn_bpb_pointers[req->unit]);
+    return OP_COMPLETE;
+  }
+
   cached = cache_find(req->unit, 0);
   if (cached >= 0) {
     _fmemcpy(buf, cache_data[cached], SECTOR_SIZE);

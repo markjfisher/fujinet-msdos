@@ -19,14 +19,18 @@ FUJINET_TRANSPORT =
 
 !if "$(FUJINET_TRANSPORT)" == "NIO"
 TRANSPORT_CPPFLAGS = -DFUJINET_TRANSPORT_NIO
+TRANSPORT_ASFLAGS = -dFUJINET_TRANSPORT_NIO
 TRANSPORT_CFILES = commands_nio.c nio.c
+F5_CFILES =
 !else
 TRANSPORT_CPPFLAGS =
+TRANSPORT_ASFLAGS =
 TRANSPORT_CFILES = commands.c
+F5_CFILES = fujicom.c intf5.c
 !endif
 
-CFILES  = $(TRANSPORT_CFILES) dispatch.c fujicom.c id8250.c init.c intf5.c print.c
-AFILES  = header.asm iwrap.asm portio.asm
+CFILES  = $(TRANSPORT_CFILES) dispatch.c port_config.c id8250.c init.c print.c setf5.c $(F5_CFILES)
+AFILES  = header.asm portio.asm iwrap.asm
 OBJS = $(CFILES:.c=.obj) $(AFILES:.asm=.obj)
 
 $(TARGET): $(OBJS)
@@ -43,7 +47,7 @@ init.obj: init.c .AUTODEPEND
 .c.obj: .AUTODEPEND
         $(CC) $(CFLAGS) -fo=$@ $< 
 .asm.obj: .AUTODEPEND
-	$(AS) $(ASFLAGS) -fo=$@ $<
+	$(AS) $(ASFLAGS) $(TRANSPORT_ASFLAGS) -fo=$@ $<
 
 clean : .SYMBOLIC
 	rm -f $(TARGET) *.obj *.map *.err *.sys *.com *.exe

@@ -1,7 +1,7 @@
 /**
  * FujiNet NIO protocol helpers for MS-DOS clients.
  *
- * This is intentionally separate from the legacy FujiNet/Atari-style
+ * This is intentionally separate from the FujiNet/Atari-style
  * FUJICOM command set.  It speaks the clean fujinet-nio service protocol:
  * FujiBus + SLIP framing, NIO service device IDs, and versioned binary
  * device payloads.
@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <fuji_f5.h>
 
 enum {
   NIO_DEVICEID_CLOCK   = 0x45,
