@@ -33,6 +33,35 @@ typedef struct {
 static uint8_t tx_prefix[NIO_MAX_TX_PREFIX];
 static uint8_t rx_payload[NIO_MAX_RX];
 static nio_header_t rx_header;
+uint8_t nio_last_error;
+uint8_t nio_last_status;
+uint16_t nio_last_rx_len;
+uint16_t nio_last_expected_len;
+uint8_t nio_last_lsr;
+
+static bool nio_fail(uint8_t error, uint16_t rx_len, uint16_t expected_len)
+{
+  nio_last_error = error;
+  nio_last_rx_len = rx_len;
+  nio_last_expected_len = expected_len;
+  return false;
+}
+
+static uint8_t nio_port_error(uint8_t fallback)
+{
+  if (port_slip_last_lsr)
+    return NIO_ERR_UART;
+  switch (port_slip_last_reason) {
+  case PORT_SLIP_REASON_TIMEOUT:
+    return NIO_ERR_TIMEOUT;
+  case PORT_SLIP_REASON_BUFFER_FULL:
+    return NIO_ERR_BUFFER_FULL;
+  case PORT_SLIP_REASON_LINE_STATUS:
+    return NIO_ERR_UART;
+  default:
+    return fallback;
+  }
+}
 
 static void put_u16le(uint8_t far *p, uint16_t v)
 {
@@ -92,6 +121,11 @@ bool nio_call(uint8_t device, uint8_t command,
     response->status = NIO_STATUS_INTERNAL_ERROR;
     response->payload_length = 0;
   }
+  nio_last_error = NIO_ERR_NONE;
+  nio_last_status = NIO_STATUS_INTERNAL_ERROR;
+  nio_last_rx_len = 0;
+  nio_last_expected_len = 0;
+  nio_last_lsr = 0;
 
   tx->device = device;
   tx->command = command;
@@ -113,8 +147,15 @@ bool nio_call(uint8_t device, uint8_t command,
   rx_len = port_getbuf_slip_dual(&rx_header, sizeof(rx_header),
                                  rx_payload, sizeof(rx_payload),
                                  NIO_TIMEOUT_SLOW);
-  if (rx_len < sizeof(rx_header) || rx_len != rx_header.length)
-    return false;
+  nio_last_rx_len = rx_len;
+  nio_last_lsr = port_slip_last_lsr;
+  if (rx_len < sizeof(rx_header)) {
+    nio_last_expected_len = sizeof(rx_header);
+    return nio_fail(nio_port_error(NIO_ERR_SHORT_FRAME), rx_len, sizeof(rx_header));
+  }
+  nio_last_expected_len = rx_header.length;
+  if (rx_len != rx_header.length)
+    return nio_fail(nio_port_error(NIO_ERR_LENGTH_MISMATCH), rx_len, rx_header.length);
 
   rx_payload_len = rx_len - sizeof(rx_header);
 
@@ -122,22 +163,23 @@ bool nio_call(uint8_t device, uint8_t command,
   rx_header.checksum = 0;
   if ((uint8_t) nio_calc_checksum(rx_payload, rx_payload_len,
         nio_calc_checksum(&rx_header, sizeof(rx_header), 0)) != checksum)
-    return false;
+    return nio_fail(NIO_ERR_CHECKSUM, rx_len, rx_header.length);
 
   if (rx_header.device != device || rx_header.command != command)
-    return false;
+    return nio_fail(NIO_ERR_DEVICE_COMMAND, rx_len, rx_header.length);
 
   if ((rx_header.fields & 0x80) || (rx_header.fields & 0x07) != FUJI_FIELD_A1)
-    return false;
+    return nio_fail(NIO_ERR_FIELDS, rx_len, rx_header.length);
   if (rx_payload_len < 1)
-    return false;
+    return nio_fail(NIO_ERR_EMPTY_STATUS, rx_len, rx_header.length);
 
   status = rx_payload[0];
+  nio_last_status = status;
   payload_offset = 1;
   rx_payload_len -= payload_offset;
 
   if (rx_payload_len > reply_capacity)
-    return false;
+    return nio_fail(NIO_ERR_REPLY_TOO_LARGE, rx_len, rx_header.length);
   if (reply && rx_payload_len)
     _fmemmove(reply, rx_payload + payload_offset, rx_payload_len);
 
@@ -162,7 +204,8 @@ bool nio_disk_info(uint8_t slot, nio_disk_info_t far *info)
                 req, sizeof(req), resp, sizeof(resp), &nr))
     return false;
   if (!nio_status_ok(nr.status) || nr.payload_length < 12 || resp[0] != NIO_DISK_VERSION)
-    return false;
+    return nio_fail(nio_status_ok(nr.status) ? NIO_ERR_PAYLOAD : NIO_ERR_STATUS,
+                    nio_last_rx_len, nio_last_expected_len);
 
   info->flags = resp[1];
   info->slot = resp[4];
@@ -190,11 +233,12 @@ bool nio_disk_read_sector(uint8_t slot, uint32_t lba,
                 req, sizeof(req), rx_payload, sizeof(rx_payload), &nr))
     return false;
   if (!nio_status_ok(nr.status) || nr.payload_length < 11 || rx_payload[0] != NIO_DISK_VERSION)
-    return false;
+    return nio_fail(nio_status_ok(nr.status) ? NIO_ERR_PAYLOAD : NIO_ERR_STATUS,
+                    nio_last_rx_len, nio_last_expected_len);
 
   data_len = get_u16le(&rx_payload[9]);
   if (data_len > buffer_length || nr.payload_length < (uint16_t) (11 + data_len))
-    return false;
+    return nio_fail(NIO_ERR_PAYLOAD, nio_last_rx_len, nio_last_expected_len);
 
   if (buffer && data_len)
     _fmemcpy(buffer, rx_payload + 11, data_len);
@@ -221,11 +265,12 @@ bool nio_disk_read_sectors(uint8_t slot, uint32_t lba, uint16_t count,
                 req, sizeof(req), rx_payload, sizeof(rx_payload), &nr))
     return false;
   if (!nio_status_ok(nr.status) || nr.payload_length < 13 || rx_payload[0] != NIO_DISK_VERSION)
-    return false;
+    return nio_fail(nio_status_ok(nr.status) ? NIO_ERR_PAYLOAD : NIO_ERR_STATUS,
+                    nio_last_rx_len, nio_last_expected_len);
 
   data_len = get_u16le(&rx_payload[11]);
   if (data_len > buffer_length || nr.payload_length < (uint16_t) (13 + data_len))
-    return false;
+    return nio_fail(NIO_ERR_PAYLOAD, nio_last_rx_len, nio_last_expected_len);
 
   if (buffer && data_len)
     _fmemcpy(buffer, rx_payload + 13, data_len);

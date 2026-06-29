@@ -16,11 +16,15 @@
 	;.8086
 
 	PUBLIC	_port_uart_base
+	PUBLIC	_port_slip_last_reason
+	PUBLIC	_port_slip_last_lsr
 
 	.data
 
 ; Global variable to store UART base address
 _port_uart_base	DW	3F8h		; Default to COM1
+_port_slip_last_reason DB 0
+_port_slip_last_lsr DB 0
 
 	.code
 
@@ -42,6 +46,10 @@ UART_DLH_OFF	EQU	1		; Divisor Latch High (when DLAB=1)
 
 	; Line Status Register bits
 LSR_DR		EQU	01h		; Data Ready
+LSR_OE		EQU	02h		; Overrun Error
+LSR_PE		EQU	04h		; Parity Error
+LSR_FE		EQU	08h		; Framing Error
+LSR_BI		EQU	10h		; Break Interrupt
 LSR_THRE	EQU	20h		; Transmitter Holding Register Empty
 
 	; Line Control Register bits
@@ -67,6 +75,11 @@ SLIP_END	EQU	0C0h
 SLIP_ESC	EQU	0DBh
 SLIP_ESC_END	EQU	0DCh
 SLIP_ESC_ESC	EQU	0DDh
+
+PORT_SLIP_REASON_NONE	EQU	0
+PORT_SLIP_REASON_TIMEOUT EQU	1
+PORT_SLIP_REASON_BUFFER_FULL EQU 2
+PORT_SLIP_REASON_LINE_STATUS EQU 3
 
 	.code
 

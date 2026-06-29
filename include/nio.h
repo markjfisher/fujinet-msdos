@@ -35,6 +35,22 @@ enum {
 };
 
 enum {
+  NIO_ERR_NONE = 0,
+  NIO_ERR_SHORT_FRAME = 1,
+  NIO_ERR_LENGTH_MISMATCH = 2,
+  NIO_ERR_CHECKSUM = 3,
+  NIO_ERR_DEVICE_COMMAND = 4,
+  NIO_ERR_FIELDS = 5,
+  NIO_ERR_EMPTY_STATUS = 6,
+  NIO_ERR_REPLY_TOO_LARGE = 7,
+  NIO_ERR_STATUS = 8,
+  NIO_ERR_PAYLOAD = 9,
+  NIO_ERR_TIMEOUT = 10,
+  NIO_ERR_BUFFER_FULL = 11,
+  NIO_ERR_UART = 12,
+};
+
+enum {
   NIO_DISK_VERSION = 1,
   NIO_DISK_CMD_MOUNT = 0x01,
   NIO_DISK_CMD_UNMOUNT = 0x02,
@@ -89,5 +105,10 @@ extern bool nio_disk_write_sectors(uint8_t slot, uint32_t lba, uint16_t count,
                                    const void far *buffer, uint16_t buffer_length,
                                    uint16_t far *bytes_written);
 extern bool nio_status_ok(uint8_t status);
+extern uint8_t nio_last_error;
+extern uint8_t nio_last_status;
+extern uint16_t nio_last_rx_len;
+extern uint16_t nio_last_expected_len;
+extern uint8_t nio_last_lsr;
 
 #endif /* _NIO_H */

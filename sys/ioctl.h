@@ -55,4 +55,9 @@ typedef struct {
   uint16_t request_len;
   uint16_t response_len;
   uint8_t data[FUJI_IOCTL_MAX_DATA];
+  uint8_t diag_error;
+  uint8_t diag_status;
+  uint16_t diag_rx_len;
+  uint16_t diag_expected_len;
+  uint8_t diag_lsr;
 } fuji_ioctl_nio_call;

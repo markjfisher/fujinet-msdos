@@ -7,7 +7,7 @@
 ; Destroys: AH, DX
 ;-----------------------------------------------------------------------------
 SLIPD_WAIT_CHAR MACRO timeout_label
-	LOCAL wait_loop, skip_timeout, got_char
+	LOCAL wait_loop, skip_timeout, no_lsr_error, got_char
 
 	mov	dx, SLIPD_LOCAL_UART_BASE
 	add	dx, UART_LSR_OFF
@@ -18,6 +18,13 @@ wait_loop:
 
 skip_timeout:
 	in	al, dx
+	push	ax
+	and	al, LSR_OE OR LSR_PE OR LSR_FE OR LSR_BI
+	jz	no_lsr_error
+	or	_port_slip_last_lsr, al
+	mov	_port_slip_last_reason, PORT_SLIP_REASON_LINE_STATUS
+no_lsr_error:
+	pop	ax
 	test	al, LSR_DR
 	jnz	got_char
 
@@ -30,6 +37,7 @@ skip_timeout:
 	jb	wait_loop
 
 	; Timeout occurred
+	mov	_port_slip_last_reason, PORT_SLIP_REASON_TIMEOUT
 	jmp	timeout_label
 
 got_char:
@@ -104,6 +112,9 @@ _port_getbuf_slip_dual PROC NEAR
 
 	push	ds			; [bp-14] Save original DS
 
+	mov	_port_slip_last_reason, PORT_SLIP_REASON_NONE
+	mov	_port_slip_last_lsr, 0
+
 	mov	di, SLIPD_PARAM_HDR_BUF	; Start with header buffer
 	mov	cx, SLIPD_PARAM_HDR_LEN	; CX = header length (remaining)
 
@@ -168,8 +179,11 @@ slipd_store_byte:
 	; Current buffer exhausted - check if we need to switch to data buffer
 	mov	cx, SLIPD_PARAM_DATA_LEN
 	test	cx, cx
-	jz	slipd_done		; No data buffer, we're done
+	jnz	slipd_switch_to_data
+	mov	_port_slip_last_reason, PORT_SLIP_REASON_BUFFER_FULL
+	jmp	slipd_done		; No data buffer, we're done
 
+slipd_switch_to_data:
 	; Zero out data_len so exhausting the data buffer ends the loop
 	mov	word ptr SLIPD_PARAM_DATA_LEN, 0
 

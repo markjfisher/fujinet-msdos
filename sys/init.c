@@ -61,6 +61,7 @@ extern void setf5(void);
 
 #ifdef FUJINET_TRANSPORT_NIO
 uint8_t probe_fujinet_nio();
+void nio_driver_config_init(void);
 #else
 uint8_t get_fujinet_version();
 uint8_t get_set_time(uint8_t set_flag);
@@ -91,6 +92,7 @@ uint16_t Init_cmd(SYSREQ far *req)
   check_uart();
 
 #ifdef FUJINET_TRANSPORT_NIO
+  nio_driver_config_init();
   err = probe_fujinet_nio();
 #else
   err = get_fujinet_version();

@@ -6,6 +6,21 @@
 ;              Default: 1 (COM1)
 ; FUJI_BPS   - Baud rate (9600, 19200, 115200, etc.)
 ;              Default: 115200
+; FUJI_BATCH_SECTORS
+;            - Maximum sectors per NIO disk read/write request.
+;              Default: 16, range: 1-16
+; FUJI_READAHEAD_SECTORS
+;            - Minimum sectors fetched for disk read-ahead.
+;              Default: 16, range: 1-16
+; FUJI_IO_RETRIES
+;            - Retry count for failed NIO disk reads.
+;              Default: 2, range: 1-16
+; FUJI_AUTO_DOWNSHIFT
+;            - Reduce read batch size after large-frame transport errors.
+;              Default: 1
+; FUJI_DEBUG_IO
+;            - Print retry diagnostics for recovered reads.
+;              Default: 0
 ; NOTIME     - Do not set DOS clock from FujiNet
 
 DEVICE=FUJINET.SYS FUJI_PORT=1 FUJI_BPS=115200

@@ -6,12 +6,15 @@
 #include "ioctl.h"
 #include <string.h>
 #include <dos.h>
+#include <stdlib.h>
 
 #undef DEBUG
 
 #define SECTOR_SIZE     512
 #define MAX_BATCH_SECTORS 16
-#define READAHEAD_SECTORS 16
+#define DEFAULT_BATCH_SECTORS 16
+#define DEFAULT_READAHEAD_SECTORS 16
+#define DEFAULT_IO_RETRIES 2
 #define CACHE_SECTORS 56
 
 extern void End_code(void);
@@ -29,10 +32,15 @@ static uint8_t cache_unit[CACHE_SECTORS];
 static uint32_t cache_lba[CACHE_SECTORS];
 static uint8_t cache_data[CACHE_SECTORS][SECTOR_SIZE];
 static uint8_t cache_next;
-static uint8_t readahead_data[READAHEAD_SECTORS][SECTOR_SIZE];
+static uint8_t readahead_data[MAX_BATCH_SECTORS][SECTOR_SIZE];
 static uint8_t info_cache_valid[FN_MAX_DEV];
 static nio_disk_info_t info_cache[FN_MAX_DEV];
 static uint8_t media_changed[FN_MAX_DEV];
+static uint8_t nio_batch_sectors = DEFAULT_BATCH_SECTORS;
+static uint8_t nio_readahead_sectors = DEFAULT_READAHEAD_SECTORS;
+static uint8_t nio_io_retries = DEFAULT_IO_RETRIES;
+static uint8_t nio_debug_io;
+static uint8_t nio_auto_downshift = 1;
 
 #ifdef OBSOLETE
 static cmdFrame_t cmd; // FIXME - make this shared with init.c?
@@ -43,6 +51,45 @@ static uint8_t unit_to_slot(uint8_t unit)
   if (unit >= FN_MAX_DEV)
     return 0xFF;
   return nio_unit_slot[unit];
+}
+
+static uint8_t parse_sector_count(const char *name, uint8_t default_value)
+{
+  const char *value = getenv(name);
+  unsigned count;
+
+  if (!value)
+    return default_value;
+
+  count = (unsigned) atoi(value);
+  if (count < 1)
+    count = 1;
+  if (count > MAX_BATCH_SECTORS)
+    count = MAX_BATCH_SECTORS;
+  return (uint8_t) count;
+}
+
+static uint8_t parse_flag(const char *name, uint8_t default_value)
+{
+  const char *value = getenv(name);
+
+  if (!value)
+    return default_value;
+  if (value[0] == '0' || value[0] == 'n' || value[0] == 'N')
+    return 0;
+  return 1;
+}
+
+void nio_driver_config_init(void)
+{
+  nio_batch_sectors = parse_sector_count("FUJI_BATCH_SECTORS", DEFAULT_BATCH_SECTORS);
+  nio_readahead_sectors = parse_sector_count("FUJI_READAHEAD_SECTORS", DEFAULT_READAHEAD_SECTORS);
+  nio_io_retries = parse_sector_count("FUJI_IO_RETRIES", DEFAULT_IO_RETRIES);
+  nio_debug_io = parse_flag("FUJI_DEBUG_IO", 0);
+  nio_auto_downshift = parse_flag("FUJI_AUTO_DOWNSHIFT", 1);
+
+  consolef("NIO batch/read-ahead/retries: %i/%i/%i\n",
+           nio_batch_sectors, nio_readahead_sectors, nio_io_retries);
 }
 
 static uint8_t unit_to_diskservice_slot(uint8_t unit)
@@ -249,11 +296,34 @@ static uint16_t handle_ioctl_buffer(SYSREQ far *req)
     if (!nio_call(call->device, call->nio_command,
                   call->data, call->request_len,
                   call->data, call->response_len,
-                  &response))
-      return ERROR_BIT | GENERAL_FAIL;
+                  &response) &&
+        !(call->device == NIO_DEVICEID_NETWORK && call->nio_command == 0x02 &&
+          nio_call(call->device, call->nio_command,
+                   call->data, call->request_len,
+                   call->data, call->response_len,
+                   &response))) {
+      if (nio_debug_io)
+        consolef("FN ioctl nio fail dev=%x cmd=%x err=%i st=%i rx=%i exp=%i\n",
+                 call->device, call->nio_command, nio_last_error,
+                 nio_last_status, nio_last_rx_len, nio_last_expected_len);
+      call->nio_status = NIO_STATUS_IO_ERROR;
+      call->response_len = 0;
+      call->diag_error = nio_last_error;
+      call->diag_status = nio_last_status;
+      call->diag_rx_len = nio_last_rx_len;
+      call->diag_expected_len = nio_last_expected_len;
+      call->diag_lsr = nio_last_lsr;
+      fill_query((fuji_ioctl_query far *) call, req->unit);
+      return OP_COMPLETE;
+    }
 
     call->nio_status = response.status;
     call->response_len = response.payload_length;
+    call->diag_error = nio_last_error;
+    call->diag_status = nio_last_status;
+    call->diag_rx_len = nio_last_rx_len;
+    call->diag_expected_len = nio_last_expected_len;
+    call->diag_lsr = nio_last_lsr;
     fill_query((fuji_ioctl_query far *) call, req->unit);
     return OP_COMPLETE;
   }
@@ -366,7 +436,7 @@ uint16_t Input_cmd(SYSREQ far *req)
   uint16_t done = 0;
   uint32_t sector, sector_max;
   uint8_t far *buf = req->io.buffer_ptr;
-  uint16_t bytes_read;
+  uint16_t bytes_read = 0;
 
 
   if (req->unit >= FN_MAX_DEV) {
@@ -396,10 +466,14 @@ uint16_t Input_cmd(SYSREQ far *req)
 
   while (done < req->io.count) {
     uint16_t remaining = req->io.count - done;
-    uint16_t batch = remaining > MAX_BATCH_SECTORS ? MAX_BATCH_SECTORS : remaining;
+    uint16_t batch = remaining > nio_batch_sectors ? nio_batch_sectors : remaining;
     uint16_t fetch;
     int cached;
     uint16_t fill;
+    uint8_t attempt;
+    uint8_t read_ok = 0;
+    uint8_t downshift = 0;
+    bytes_read = 0;
 
     if (sector >= sector_max) {
       consolef("FN Invalid sector read %li on %i\n", sector, req->unit);
@@ -418,17 +492,55 @@ uint16_t Input_cmd(SYSREQ far *req)
       batch = (uint16_t) (sector_max - sector);
 
     fetch = batch;
-    if (fetch < READAHEAD_SECTORS)
-      fetch = READAHEAD_SECTORS;
+    if (fetch < nio_readahead_sectors)
+      fetch = nio_readahead_sectors;
     if ((uint32_t) fetch > (sector_max - sector))
       fetch = (uint16_t) (sector_max - sector);
 
-    if (!nio_disk_read_sectors(unit_to_diskservice_slot(req->unit), sector, fetch,
-                               readahead_data,
-                               (uint16_t) (fetch * SECTOR_SIZE),
-                               &bytes_read) ||
-        bytes_read < (uint16_t) (fetch * SECTOR_SIZE))
+    for (attempt = 0; attempt <= nio_io_retries; attempt++) {
+      bytes_read = 0;
+      if (nio_disk_read_sectors(unit_to_diskservice_slot(req->unit), sector, fetch,
+                                readahead_data,
+                                (uint16_t) (fetch * SECTOR_SIZE),
+                                &bytes_read) &&
+          bytes_read >= (uint16_t) (fetch * SECTOR_SIZE)) {
+        read_ok = 1;
+        break;
+      }
+
+      if (nio_auto_downshift && fetch > 1 &&
+          (nio_last_error == NIO_ERR_SHORT_FRAME ||
+           nio_last_error == NIO_ERR_LENGTH_MISMATCH ||
+           nio_last_error == NIO_ERR_CHECKSUM)) {
+        uint8_t new_limit = (uint8_t) (fetch >> 1);
+        if (new_limit < 1)
+          new_limit = 1;
+        if (nio_batch_sectors > new_limit)
+          nio_batch_sectors = new_limit;
+        if (nio_readahead_sectors > new_limit)
+          nio_readahead_sectors = new_limit;
+        consolef("FN read downshift n=%i err=%i rx=%i exp=%i\n",
+                 new_limit, nio_last_error, nio_last_rx_len,
+                 nio_last_expected_len);
+        downshift = 1;
+        break;
+      }
+
+      if (nio_debug_io && attempt < nio_io_retries)
+        consolef("FN read retry u=%i lba=%li n=%i err=%i st=%i rx=%i exp=%i\n",
+                 req->unit, sector, fetch, nio_last_error,
+                 nio_last_status, nio_last_rx_len, nio_last_expected_len);
+    }
+
+    if (downshift)
+      continue;
+
+    if (!read_ok) {
+      consolef("FN read fail u=%i lba=%li n=%i got=%i err=%i st=%i rx=%i exp=%i\n",
+               req->unit, sector, fetch, bytes_read, nio_last_error,
+               nio_last_status, nio_last_rx_len, nio_last_expected_len);
       break;
+    }
 
     for (fill = 0; fill < fetch; fill++)
       cache_store(req->unit, sector + fill, readahead_data[fill]);
@@ -467,7 +579,7 @@ uint16_t Output_cmd(SYSREQ far *req)
   uint16_t done = 0;
   uint32_t sector, sector_max;
   uint8_t far *buf = req->io.buffer_ptr;
-  uint16_t bytes_written;
+  uint16_t bytes_written = 0;
   nio_disk_info_t info;
 
 
@@ -498,7 +610,8 @@ uint16_t Output_cmd(SYSREQ far *req)
 
   while (done < req->io.count) {
     uint16_t remaining = req->io.count - done;
-    uint16_t batch = remaining > MAX_BATCH_SECTORS ? MAX_BATCH_SECTORS : remaining;
+    uint16_t batch = remaining > nio_batch_sectors ? nio_batch_sectors : remaining;
+    bytes_written = 0;
 
     if (sector >= sector_max) {
       consolef("FN Invalid sector write %i on %i:\n", sector, req->unit);
@@ -511,8 +624,12 @@ uint16_t Output_cmd(SYSREQ far *req)
                                 &buf[done * SECTOR_SIZE],
                                 (uint16_t) (batch * SECTOR_SIZE),
                                 &bytes_written) ||
-        bytes_written < (uint16_t) (batch * SECTOR_SIZE))
+        bytes_written < (uint16_t) (batch * SECTOR_SIZE)) {
+      consolef("FN write fail u=%i lba=%li n=%i got=%i err=%i st=%i rx=%i exp=%i\n",
+               req->unit, sector, batch, bytes_written, nio_last_error,
+               nio_last_status, nio_last_rx_len, nio_last_expected_len);
       break;
+    }
 
     {
       uint16_t fill;
