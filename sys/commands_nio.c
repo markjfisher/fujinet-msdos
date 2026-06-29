@@ -296,12 +296,7 @@ static uint16_t handle_ioctl_buffer(SYSREQ far *req)
     if (!nio_call(call->device, call->nio_command,
                   call->data, call->request_len,
                   call->data, call->response_len,
-                  &response) &&
-        !(call->device == NIO_DEVICEID_NETWORK && call->nio_command == 0x02 &&
-          nio_call(call->device, call->nio_command,
-                   call->data, call->request_len,
-                   call->data, call->response_len,
-                   &response))) {
+                  &response)) {
       if (nio_debug_io)
         consolef("FN ioctl nio fail dev=%x cmd=%x err=%i st=%i rx=%i exp=%i\n",
                  call->device, call->nio_command, nio_last_error,
