@@ -365,6 +365,30 @@ static uint16_t handle_ioctl_buffer(SYSREQ far *req)
     return nio_handle_control_call(call, req->unit);
   }
 
+  case FUJI_IOCTL_NIO_DIAG:
+  {
+    fuji_ioctl_nio_diag far *diag = (fuji_ioctl_nio_diag far *) buffer;
+    uint16_t max_records;
+
+    if (req->io.count < sizeof(*diag))
+      return ERROR_BIT | UNKNOWN_CMD;
+
+    if (diag->clear)
+      nio_diag_clear();
+
+    max_records = diag->max_records;
+    if (max_records > FUJI_IOCTL_NIO_DIAG_MAX_RECORDS)
+      max_records = FUJI_IOCTL_NIO_DIAG_MAX_RECORDS;
+
+    fill_query((fuji_ioctl_query far *) diag, req->unit);
+    diag->record_size = sizeof(nio_diag_record_t);
+    diag->available = nio_diag_count();
+    diag->total = nio_diag_total();
+    diag->dropped = nio_diag_dropped();
+    diag->record_count = nio_diag_read(diag->start, max_records, diag->records);
+    return OP_COMPLETE;
+  }
+
   default:
     return ERROR_BIT | UNKNOWN_CMD;
   }

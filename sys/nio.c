@@ -4,11 +4,13 @@
 
 #include "nio.h"
 #include "portio.h"
+#include <dos.h>
 #include <string.h>
 
 #define NIO_TIMEOUT_SLOW (15 * 1000)
 #define NIO_MAX_RX       9216
 #define NIO_MAX_TX_PREFIX 32
+#define NIO_DIAG_RING    12
 
 enum {
   SLIP_END     = 0xC0,
@@ -33,6 +35,11 @@ typedef struct {
 static uint8_t tx_prefix[NIO_MAX_TX_PREFIX];
 static uint8_t rx_payload[NIO_MAX_RX];
 static nio_header_t rx_header;
+static nio_diag_record_t nio_diag_ring[NIO_DIAG_RING];
+static uint16_t nio_diag_head;
+static uint16_t nio_diag_used;
+static uint32_t nio_diag_seq;
+static uint32_t nio_diag_drop_count;
 uint8_t nio_last_error;
 uint8_t nio_last_status;
 uint16_t nio_last_rx_len;
@@ -40,6 +47,101 @@ uint16_t nio_last_expected_len;
 uint8_t nio_last_lsr;
 uint16_t nio_network_timeout_ms = NIO_TIMEOUT_SLOW;
 uint8_t nio_transport_retries = 2;
+
+static uint32_t bios_tick(void)
+{
+  uint32_t far *ticks = (uint32_t far *) MK_FP(0x40, 0x6c);
+  return *ticks;
+}
+
+static void nio_diag_log(uint8_t attempt, uint8_t max_attempts,
+                         uint8_t device, uint8_t command,
+                         const void far *payload, uint16_t payload_length,
+                         uint16_t reply_capacity, uint16_t timeout_ms)
+{
+  nio_diag_record_t *rec;
+  uint16_t idx;
+  uint16_t copy_len;
+
+  idx = nio_diag_head;
+  rec = &nio_diag_ring[idx];
+
+  _fmemset(rec, 0, sizeof(*rec));
+  rec->seq = ++nio_diag_seq;
+  rec->tick = bios_tick();
+  rec->event = NIO_DIAG_EVENT_ATTEMPT;
+  rec->attempt = attempt;
+  rec->max_attempts = max_attempts;
+  rec->device = device;
+  rec->command = command;
+  rec->error = nio_last_error;
+  rec->status = nio_last_status;
+  rec->lsr = nio_last_lsr;
+  rec->slip_reason = port_slip_last_reason;
+  rec->request_len = payload_length;
+  rec->reply_capacity = reply_capacity;
+  rec->timeout_ms = timeout_ms;
+  rec->rx_len = nio_last_rx_len;
+  rec->expected_len = nio_last_expected_len;
+
+  if (payload && payload_length) {
+    copy_len = payload_length;
+    if (copy_len > NIO_DIAG_REQ_PREFIX)
+      copy_len = NIO_DIAG_REQ_PREFIX;
+    _fmemcpy(rec->request_prefix, payload, copy_len);
+  }
+
+  nio_diag_head = (uint16_t) ((nio_diag_head + 1) % NIO_DIAG_RING);
+  if (nio_diag_used < NIO_DIAG_RING)
+    nio_diag_used++;
+  else
+    nio_diag_drop_count++;
+}
+
+uint16_t nio_diag_count(void)
+{
+  return nio_diag_used;
+}
+
+uint32_t nio_diag_total(void)
+{
+  return nio_diag_seq;
+}
+
+uint32_t nio_diag_dropped(void)
+{
+  return nio_diag_drop_count;
+}
+
+uint16_t nio_diag_read(uint16_t start, uint16_t max_records,
+                       nio_diag_record_t far *records)
+{
+  uint16_t count;
+  uint16_t first;
+  uint16_t idx;
+
+  if (start >= nio_diag_used || !records)
+    return 0;
+
+  count = nio_diag_used - start;
+  if (count > max_records)
+    count = max_records;
+
+  first = (nio_diag_head + NIO_DIAG_RING - nio_diag_used) % NIO_DIAG_RING;
+  for (idx = 0; idx < count; idx++) {
+    uint16_t ring_idx = (uint16_t) ((first + start + idx) % NIO_DIAG_RING);
+    _fmemcpy(&records[idx], &nio_diag_ring[ring_idx], sizeof(nio_diag_record_t));
+  }
+  return count;
+}
+
+void nio_diag_clear(void)
+{
+  nio_diag_head = 0;
+  nio_diag_used = 0;
+  nio_diag_seq = 0;
+  nio_diag_drop_count = 0;
+}
 
 static bool nio_fail(uint8_t error, uint16_t rx_len, uint16_t expected_len)
 {
@@ -202,6 +304,7 @@ bool nio_call(uint8_t device, uint8_t command,
 {
   nio_header_t *tx = (nio_header_t *) tx_prefix;
   uint16_t checksum;
+  uint16_t timeout;
   uint8_t attempt;
   uint8_t max_attempts;
 
@@ -220,6 +323,8 @@ bool nio_call(uint8_t device, uint8_t command,
   if (max_attempts == 0)
     max_attempts = 1;
 
+  timeout = (device == NIO_DEVICEID_NETWORK) ? nio_network_timeout_ms : NIO_TIMEOUT_SLOW;
+
   for (attempt = 0; attempt < max_attempts; attempt++) {
     nio_last_error = NIO_ERR_NONE;
     nio_last_status = NIO_STATUS_INTERNAL_ERROR;
@@ -228,8 +333,15 @@ bool nio_call(uint8_t device, uint8_t command,
     nio_last_lsr = 0;
 
     if (nio_call_once(device, command, payload, payload_length,
-                      reply, reply_capacity, response))
+                      reply, reply_capacity, response)) {
+      if (attempt > 0)
+        nio_diag_log((uint8_t) (attempt + 1), max_attempts, device, command,
+                     payload, payload_length, reply_capacity, timeout);
       return true;
+    }
+
+    nio_diag_log((uint8_t) (attempt + 1), max_attempts, device, command,
+                 payload, payload_length, reply_capacity, timeout);
 
     if (!nio_should_retry_error(nio_last_error))
       return false;

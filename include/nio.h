@@ -86,10 +86,44 @@ typedef struct {
   uint8_t last_error;
 } nio_disk_info_t;
 
+#define NIO_DIAG_REQ_PREFIX 8
+
+enum {
+  NIO_DIAG_EVENT_ATTEMPT = 1
+};
+
+typedef struct {
+  uint32_t seq;
+  uint32_t tick;
+  uint8_t event;
+  uint8_t attempt;
+  uint8_t max_attempts;
+  uint8_t device;
+  uint8_t command;
+  uint8_t error;
+  uint8_t status;
+  uint8_t lsr;
+  uint8_t slip_reason;
+  uint8_t reserved;
+  uint16_t request_len;
+  uint16_t reply_capacity;
+  uint16_t timeout_ms;
+  uint16_t rx_len;
+  uint16_t expected_len;
+  uint8_t request_prefix[NIO_DIAG_REQ_PREFIX];
+} nio_diag_record_t;
+
 extern bool nio_call(uint8_t device, uint8_t command,
                      const void far *payload, uint16_t payload_length,
                      void far *reply, uint16_t reply_capacity,
                      nio_response_t far *response);
+
+extern uint16_t nio_diag_count(void);
+extern uint32_t nio_diag_total(void);
+extern uint32_t nio_diag_dropped(void);
+extern uint16_t nio_diag_read(uint16_t start, uint16_t max_records,
+                              nio_diag_record_t far *records);
+extern void nio_diag_clear(void);
 
 extern bool nio_disk_info(uint8_t slot, nio_disk_info_t far *info);
 extern bool nio_disk_read_sector(uint8_t slot, uint32_t lba,
