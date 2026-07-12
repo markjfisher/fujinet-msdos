@@ -35,6 +35,7 @@ These control the RS-232 connection to the FujiNet adapter:
 |-----------|---------|------------------------------------------------------------|
 | FUJI_PORT | 1       | Serial port to use: 1–4, or hex I/O address (e.g. `0x3F8`; optional trailing IRQ is parsed but unused by polling I/O) |
 | FUJI_BPS  | 115200  | Bits per second (9600, 19200, 115200, etc.)                |
+| FUJI_NIO_RETRIES | 2 | Low-level NIO request/response retry count after UART timeout, overrun, short frame, length mismatch, or checksum failure. Set to 0 to disable. |
 | FUJI_NET_TIMEOUT_MS | 15000 | NIO network request/response timeout in milliseconds. |
 
 ## Build Directions

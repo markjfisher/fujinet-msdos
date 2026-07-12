@@ -1,8 +1,6 @@
 _TEXT	segment word public 'CODE'
 
-IFNDEF FUJINET_TRANSPORT_NIO
 	extern	intf5_:near
-ENDIF
 
 FUJIF5_DETECT_MAGIC	EQU	0F501h
 
@@ -11,13 +9,6 @@ intf5_vect_ PROC NEAR
 	cmp	ax, 0
 	je	detect_
 
-IFDEF FUJINET_TRANSPORT_NIO
-	push	bp
-	mov	bp, sp
-	or	WORD PTR [bp+6], 1
-	pop	bp
-	iret
-ELSE
 	push	bx
 	push	cx
 	push	dx
@@ -42,7 +33,6 @@ ELSE
 	pop	cx
 	pop	bx
 	iret
-ENDIF
 
 detect_:
 	push	cs

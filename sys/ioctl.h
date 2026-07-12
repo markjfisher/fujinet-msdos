@@ -1,3 +1,6 @@
+#ifndef FUJI_IOCTL_H
+#define FUJI_IOCTL_H
+
 #include <stdint.h>
 
 #define FUJI_IOCTL_SIGNATURE "FUJI"
@@ -61,3 +64,5 @@ typedef struct {
   uint16_t diag_expected_len;
   uint8_t diag_lsr;
 } fuji_ioctl_nio_call;
+
+#endif /* FUJI_IOCTL_H */

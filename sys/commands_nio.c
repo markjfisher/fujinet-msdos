@@ -15,6 +15,7 @@
 #define DEFAULT_BATCH_SECTORS 16
 #define DEFAULT_READAHEAD_SECTORS 16
 #define DEFAULT_IO_RETRIES 2
+#define DEFAULT_NIO_RETRIES 2
 #define DEFAULT_NETWORK_TIMEOUT_MS (15 * 1000)
 #define CACHE_SECTORS 56
 
@@ -70,6 +71,20 @@ static uint8_t parse_sector_count(const char *name, uint8_t default_value)
   return (uint8_t) count;
 }
 
+static uint8_t parse_retry_count(const char *name, uint8_t default_value)
+{
+  const char *value = getenv(name);
+  unsigned count;
+
+  if (!value)
+    return default_value;
+
+  count = (unsigned) atoi(value);
+  if (count > MAX_BATCH_SECTORS)
+    count = MAX_BATCH_SECTORS;
+  return (uint8_t) count;
+}
+
 static uint8_t parse_flag(const char *name, uint8_t default_value)
 {
   const char *value = getenv(name);
@@ -101,14 +116,16 @@ void nio_driver_config_init(void)
 {
   nio_batch_sectors = parse_sector_count("FUJI_BATCH_SECTORS", DEFAULT_BATCH_SECTORS);
   nio_readahead_sectors = parse_sector_count("FUJI_READAHEAD_SECTORS", DEFAULT_READAHEAD_SECTORS);
-  nio_io_retries = parse_sector_count("FUJI_IO_RETRIES", DEFAULT_IO_RETRIES);
+  nio_io_retries = parse_retry_count("FUJI_IO_RETRIES", DEFAULT_IO_RETRIES);
+  nio_transport_retries = parse_retry_count("FUJI_NIO_RETRIES", DEFAULT_NIO_RETRIES);
   nio_debug_io = parse_flag("FUJI_DEBUG_IO", 0);
   nio_auto_downshift = parse_flag("FUJI_AUTO_DOWNSHIFT", 1);
   nio_network_timeout_ms = parse_timeout_ms("FUJI_NET_TIMEOUT_MS", DEFAULT_NETWORK_TIMEOUT_MS);
 
-  consolef("NIO batch/read-ahead/retries: %i/%i/%i\n",
-           nio_batch_sectors, nio_readahead_sectors, nio_io_retries);
-  consolef("NIO network timeout: %u ms\n", nio_network_timeout_ms);
+  consolef("NIO batch/read-ahead/retries: %i/%i/%i tx=%i\n",
+           nio_batch_sectors, nio_readahead_sectors, nio_io_retries,
+           nio_transport_retries);
+  consolef("NIO network timeout: %i ms\n", nio_network_timeout_ms);
 }
 
 static uint8_t unit_to_diskservice_slot(uint8_t unit)
@@ -125,6 +142,71 @@ static void fill_query(fuji_ioctl_query far *query, uint8_t unit)
   query->unit = unit;
   query->version = FUJI_IOCTL_VERSION;
   query->max_units = FN_MAX_DEV;
+}
+
+uint16_t nio_handle_control_call(fuji_ioctl_nio_call far *call, uint8_t unit)
+{
+  nio_response_t response;
+  uint16_t uri_len;
+  uint16_t path_len;
+  uint16_t offset;
+
+  if (call->request_len > FUJI_IOCTL_MAX_DATA ||
+      call->response_len > FUJI_IOCTL_MAX_DATA)
+    return ERROR_BIT | BAD_REQ_LEN;
+
+  if (call->device == 0x00 && call->nio_command == FUJI_IOCTL_SET_STATE) {
+    if (call->request_len < 4)
+      return ERROR_BIT | BAD_REQ_LEN;
+    uri_len = (uint16_t) call->data[0] | ((uint16_t) call->data[1] << 8);
+    path_len = (uint16_t) call->data[2] | ((uint16_t) call->data[3] << 8);
+    offset = 4;
+    if (uri_len > FUJI_IOCTL_MAX_URI || path_len > FUJI_IOCTL_MAX_PATH ||
+        call->request_len < (uint16_t) (offset + uri_len + path_len))
+      return ERROR_BIT | BAD_REQ_LEN;
+
+    nio_current_uri_len = uri_len;
+    nio_display_path_len = path_len;
+    _fmemset(nio_current_uri, 0, sizeof(nio_current_uri));
+    _fmemset(nio_display_path, 0, sizeof(nio_display_path));
+    _fmemcpy(nio_current_uri, &call->data[offset], nio_current_uri_len);
+    offset += uri_len;
+    _fmemcpy(nio_display_path, &call->data[offset], nio_display_path_len);
+
+    call->nio_status = NIO_STATUS_OK;
+    call->response_len = 0;
+    fill_query((fuji_ioctl_query far *) call, unit);
+    return OP_COMPLETE;
+  }
+
+  if (!nio_call(call->device, call->nio_command,
+                call->data, call->request_len,
+                call->data, call->response_len,
+                &response)) {
+    if (nio_debug_io)
+      consolef("FN nio fail dev=%x cmd=%x err=%i st=%i rx=%i exp=%i\n",
+               call->device, call->nio_command, nio_last_error,
+               nio_last_status, nio_last_rx_len, nio_last_expected_len);
+    call->nio_status = NIO_STATUS_IO_ERROR;
+    call->response_len = 0;
+    call->diag_error = nio_last_error;
+    call->diag_status = nio_last_status;
+    call->diag_rx_len = nio_last_rx_len;
+    call->diag_expected_len = nio_last_expected_len;
+    call->diag_lsr = nio_last_lsr;
+    fill_query((fuji_ioctl_query far *) call, unit);
+    return OP_COMPLETE;
+  }
+
+  call->nio_status = response.status;
+  call->response_len = response.payload_length;
+  call->diag_error = nio_last_error;
+  call->diag_status = nio_last_status;
+  call->diag_rx_len = nio_last_rx_len;
+  call->diag_expected_len = nio_last_expected_len;
+  call->diag_lsr = nio_last_lsr;
+  fill_query((fuji_ioctl_query far *) call, unit);
+  return OP_COMPLETE;
 }
 
 static int cache_find(uint8_t unit, uint32_t lba)
@@ -277,69 +359,10 @@ static uint16_t handle_ioctl_buffer(SYSREQ far *req)
   case FUJI_IOCTL_NIO_CALL:
   {
     fuji_ioctl_nio_call far *call = (fuji_ioctl_nio_call far *) buffer;
-    nio_response_t response;
-    uint16_t uri_len;
-    uint16_t path_len;
-    uint16_t offset;
 
     if (req->io.count < sizeof(*call))
       return ERROR_BIT | UNKNOWN_CMD;
-    if (call->request_len > FUJI_IOCTL_MAX_DATA ||
-        call->response_len > FUJI_IOCTL_MAX_DATA)
-      return ERROR_BIT | BAD_REQ_LEN;
-
-    if (call->device == 0x00 && call->nio_command == FUJI_IOCTL_SET_STATE) {
-      if (call->request_len < 4)
-        return ERROR_BIT | BAD_REQ_LEN;
-      uri_len = (uint16_t) call->data[0] | ((uint16_t) call->data[1] << 8);
-      path_len = (uint16_t) call->data[2] | ((uint16_t) call->data[3] << 8);
-      offset = 4;
-      if (uri_len > FUJI_IOCTL_MAX_URI || path_len > FUJI_IOCTL_MAX_PATH ||
-          call->request_len < (uint16_t) (offset + uri_len + path_len))
-        return ERROR_BIT | BAD_REQ_LEN;
-
-      nio_current_uri_len = uri_len;
-      nio_display_path_len = path_len;
-      _fmemset(nio_current_uri, 0, sizeof(nio_current_uri));
-      _fmemset(nio_display_path, 0, sizeof(nio_display_path));
-      _fmemcpy(nio_current_uri, &call->data[offset], nio_current_uri_len);
-      offset += uri_len;
-      _fmemcpy(nio_display_path, &call->data[offset], nio_display_path_len);
-
-      call->nio_status = NIO_STATUS_OK;
-      call->response_len = 0;
-      fill_query((fuji_ioctl_query far *) call, req->unit);
-      return OP_COMPLETE;
-    }
-
-    if (!nio_call(call->device, call->nio_command,
-                  call->data, call->request_len,
-                  call->data, call->response_len,
-                  &response)) {
-      if (nio_debug_io)
-        consolef("FN ioctl nio fail dev=%x cmd=%x err=%i st=%i rx=%i exp=%i\n",
-                 call->device, call->nio_command, nio_last_error,
-                 nio_last_status, nio_last_rx_len, nio_last_expected_len);
-      call->nio_status = NIO_STATUS_IO_ERROR;
-      call->response_len = 0;
-      call->diag_error = nio_last_error;
-      call->diag_status = nio_last_status;
-      call->diag_rx_len = nio_last_rx_len;
-      call->diag_expected_len = nio_last_expected_len;
-      call->diag_lsr = nio_last_lsr;
-      fill_query((fuji_ioctl_query far *) call, req->unit);
-      return OP_COMPLETE;
-    }
-
-    call->nio_status = response.status;
-    call->response_len = response.payload_length;
-    call->diag_error = nio_last_error;
-    call->diag_status = nio_last_status;
-    call->diag_rx_len = nio_last_rx_len;
-    call->diag_expected_len = nio_last_expected_len;
-    call->diag_lsr = nio_last_lsr;
-    fill_query((fuji_ioctl_query far *) call, req->unit);
-    return OP_COMPLETE;
+    return nio_handle_control_call(call, req->unit);
   }
 
   default:

@@ -14,7 +14,12 @@
 ;              Default: 16, range: 1-16
 ; FUJI_IO_RETRIES
 ;            - Retry count for failed NIO disk reads.
-;              Default: 2, range: 1-16
+;              Default: 2, range: 0-16
+; FUJI_NIO_RETRIES
+;            - Retry count for low-level NIO request/response transactions
+;              after UART timeout, overrun, short frame, length mismatch, or
+;              checksum failure.
+;              Default: 2, range: 0-16
 ; FUJI_AUTO_DOWNSHIFT
 ;            - Reduce read batch size after large-frame transport errors.
 ;              Default: 1

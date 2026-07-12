@@ -39,6 +39,7 @@ uint16_t nio_last_rx_len;
 uint16_t nio_last_expected_len;
 uint8_t nio_last_lsr;
 uint16_t nio_network_timeout_ms = NIO_TIMEOUT_SLOW;
+uint8_t nio_transport_retries = 2;
 
 static bool nio_fail(uint8_t error, uint16_t rx_len, uint16_t expected_len)
 {
@@ -106,10 +107,24 @@ bool nio_status_ok(uint8_t status)
   return status == NIO_STATUS_OK;
 }
 
-bool nio_call(uint8_t device, uint8_t command,
-              const void far *payload, uint16_t payload_length,
-              void far *reply, uint16_t reply_capacity,
-              nio_response_t far *response)
+static bool nio_should_retry_error(uint8_t error)
+{
+  switch (error) {
+  case NIO_ERR_UART:
+  case NIO_ERR_TIMEOUT:
+  case NIO_ERR_SHORT_FRAME:
+  case NIO_ERR_LENGTH_MISMATCH:
+  case NIO_ERR_CHECKSUM:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static bool nio_call_once(uint8_t device, uint8_t command,
+                          const void far *payload, uint16_t payload_length,
+                          void far *reply, uint16_t reply_capacity,
+                          nio_response_t far *response)
 {
   nio_header_t *tx = (nio_header_t *) tx_prefix;
   uint16_t checksum;
@@ -123,22 +138,6 @@ bool nio_call(uint8_t device, uint8_t command,
     response->status = NIO_STATUS_INTERNAL_ERROR;
     response->payload_length = 0;
   }
-  nio_last_error = NIO_ERR_NONE;
-  nio_last_status = NIO_STATUS_INTERNAL_ERROR;
-  nio_last_rx_len = 0;
-  nio_last_expected_len = 0;
-  nio_last_lsr = 0;
-
-  tx->device = device;
-  tx->command = command;
-  tx->length = sizeof(*tx) + payload_length;
-  tx->checksum = 0;
-  tx->fields = FUJI_FIELD_NONE;
-
-  checksum = nio_calc_checksum(tx, sizeof(*tx), 0);
-  if (payload)
-    checksum = nio_calc_checksum(payload, payload_length, checksum);
-  tx->checksum = (uint8_t) checksum;
 
   port_flush_rx();
   port_putc(SLIP_END);
@@ -194,6 +193,49 @@ bool nio_call(uint8_t device, uint8_t command,
   }
 
   return true;
+}
+
+bool nio_call(uint8_t device, uint8_t command,
+              const void far *payload, uint16_t payload_length,
+              void far *reply, uint16_t reply_capacity,
+              nio_response_t far *response)
+{
+  nio_header_t *tx = (nio_header_t *) tx_prefix;
+  uint16_t checksum;
+  uint8_t attempt;
+  uint8_t max_attempts;
+
+  tx->device = device;
+  tx->command = command;
+  tx->length = sizeof(*tx) + payload_length;
+  tx->checksum = 0;
+  tx->fields = FUJI_FIELD_NONE;
+
+  checksum = nio_calc_checksum(tx, sizeof(*tx), 0);
+  if (payload)
+    checksum = nio_calc_checksum(payload, payload_length, checksum);
+  tx->checksum = (uint8_t) checksum;
+
+  max_attempts = (uint8_t) (nio_transport_retries + 1);
+  if (max_attempts == 0)
+    max_attempts = 1;
+
+  for (attempt = 0; attempt < max_attempts; attempt++) {
+    nio_last_error = NIO_ERR_NONE;
+    nio_last_status = NIO_STATUS_INTERNAL_ERROR;
+    nio_last_rx_len = 0;
+    nio_last_expected_len = 0;
+    nio_last_lsr = 0;
+
+    if (nio_call_once(device, command, payload, payload_length,
+                      reply, reply_capacity, response))
+      return true;
+
+    if (!nio_should_retry_error(nio_last_error))
+      return false;
+  }
+
+  return false;
 }
 
 bool nio_disk_info(uint8_t slot, nio_disk_info_t far *info)
