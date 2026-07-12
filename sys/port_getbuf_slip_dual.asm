@@ -2,7 +2,7 @@
 
 ;-----------------------------------------------------------------------------
 ; Macro to wait for a character with timeout
-; On entry: SI = end tick count, ES = BIOS_DATA_SEG
+; On entry: SI = start tick count, ES = BIOS_DATA_SEG
 ; On exit: AL = character received, or jumps to timeout_label if timeout
 ; Destroys: AH, DX
 ;-----------------------------------------------------------------------------
@@ -36,7 +36,8 @@ no_lsr_error:
 
 	sti
 	mov	ax, es:[BIOS_TICK_OFFSET]
-	cmp	ax, si
+	sub	ax, si
+	cmp	ax, SLIPD_PARAM_TIMEOUT
 	jb	wait_loop
 
 	; Timeout occurred
@@ -181,7 +182,6 @@ _port_getbuf_slip_dual PROC NEAR
 	; Phase 1: Sync to frame - discard until SLIP_END
 slipd_sync:
 	mov	si, es:[BIOS_TICK_OFFSET]
-	add	si, SLIPD_PARAM_TIMEOUT
 	SLIPD_WAIT_CHAR slipd_done
 	cmp	al, SLIP_END
 	jne	slipd_sync
@@ -189,7 +189,6 @@ slipd_sync:
 	; Phase 2: Skip additional SLIP_END bytes
 slipd_skip_end:
 	mov	si, es:[BIOS_TICK_OFFSET]
-	add	si, SLIPD_PARAM_TIMEOUT
 	SLIPD_WAIT_CHAR slipd_done
 	cmp	al, SLIP_END
 	je	slipd_skip_end
@@ -236,7 +235,6 @@ slipd_read_next:
 
 slipd_wait_next:
 	mov	si, es:[BIOS_TICK_OFFSET]
-	add	si, SLIPD_PARAM_TIMEOUT
 	SLIPD_WAIT_CHAR slipd_done
 	jmp	slipd_decode_loop
 
@@ -248,7 +246,6 @@ slipd_handle_escape:
 
 slipd_wait_escape:
 	mov	si, es:[BIOS_TICK_OFFSET]
-	add	si, SLIPD_PARAM_TIMEOUT
 	SLIPD_WAIT_CHAR slipd_done
 
 slipd_decode_escape:
