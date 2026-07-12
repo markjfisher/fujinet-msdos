@@ -12,7 +12,10 @@ SLIP_WAIT_CHAR MACRO timeout_label
 
 wait_loop:
 	cli
-	mov	ah, 32
+	; Keep interrupt windows sparse while waiting for response bytes.
+	; If an interrupt handler runs just as FujiNet starts a short 115200 baud
+	; response, the UART can overrun before polling resumes.
+	mov	ah, 255
 
 skip_timeout:
 	in	al, dx
