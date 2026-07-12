@@ -47,6 +47,37 @@ got_char:
 ENDM
 
 ;-----------------------------------------------------------------------------
+; Macro to read a character immediately if the UART has data pending.
+; On exit: AL = character received, or jumps to no_char_label if no data ready
+; Destroys: DX
+;-----------------------------------------------------------------------------
+SLIPD_TRY_CHAR MACRO no_char_label
+	LOCAL no_lsr_error, got_char
+
+	mov	dx, SLIPD_LOCAL_UART_BASE
+	add	dx, UART_LSR_OFF
+
+	cli
+	in	al, dx
+	push	ax
+	and	al, LSR_OE OR LSR_PE OR LSR_FE OR LSR_BI
+	jz	no_lsr_error
+	or	_port_slip_last_lsr, al
+	mov	_port_slip_last_reason, PORT_SLIP_REASON_LINE_STATUS
+no_lsr_error:
+	pop	ax
+	test	al, LSR_DR
+	jnz	got_char
+	sti
+	jmp	no_char_label
+
+got_char:
+	mov	dx, SLIPD_LOCAL_UART_BASE
+	add	dx, UART_RBR_OFF
+	in	al, dx
+ENDM
+
+;-----------------------------------------------------------------------------
 ; uint16_t port_getbuf_slip_dual(void *hdr_buf, uint16_t hdr_len,
 ;				  void far *data_buf, uint16_t data_len,
 ;				  uint16_t timeout)
@@ -194,18 +225,30 @@ slipd_switch_to_data:
 	; Fall through to slipd_read_next
 
 slipd_read_next:
-	; Read next byte
+	; Drain the UART immediately while data is already pending. At
+	; 115200 baud a 16-byte FIFO can overrun in about 1.4ms, so avoid
+	; re-entering the timeout path between bytes that are already ready.
+	SLIPD_TRY_CHAR slipd_wait_next
+	jmp	slipd_decode_loop
+
+slipd_wait_next:
 	mov	si, es:[BIOS_TICK_OFFSET]
 	add	si, SLIPD_PARAM_TIMEOUT
 	SLIPD_WAIT_CHAR slipd_done
 	jmp	slipd_decode_loop
 
 slipd_handle_escape:
-	; Read escaped byte
+	; Read escaped byte. Prefer the same immediate drain path because
+	; escaped pairs normally arrive back-to-back in the FIFO.
+	SLIPD_TRY_CHAR slipd_wait_escape
+	jmp	slipd_decode_escape
+
+slipd_wait_escape:
 	mov	si, es:[BIOS_TICK_OFFSET]
 	add	si, SLIPD_PARAM_TIMEOUT
 	SLIPD_WAIT_CHAR slipd_done
 
+slipd_decode_escape:
 	; Decode escape sequence
 	cmp	al, SLIP_ESC_END
 	jne	slipd_check_esc_esc
