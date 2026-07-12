@@ -21,6 +21,9 @@
 ; FUJI_DEBUG_IO
 ;            - Print retry diagnostics for recovered reads.
 ;              Default: 0
+; FUJI_NET_TIMEOUT_MS
+;            - Timeout for NIO network request/response transactions.
+;              Default: 15000, range: 250-60000
 ; NOTIME     - Do not set DOS clock from FujiNet
 
 DEVICE=FUJINET.SYS FUJI_PORT=1 FUJI_BPS=115200

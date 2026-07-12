@@ -15,6 +15,7 @@
 #define DEFAULT_BATCH_SECTORS 16
 #define DEFAULT_READAHEAD_SECTORS 16
 #define DEFAULT_IO_RETRIES 2
+#define DEFAULT_NETWORK_TIMEOUT_MS (15 * 1000)
 #define CACHE_SECTORS 56
 
 extern void End_code(void);
@@ -80,6 +81,22 @@ static uint8_t parse_flag(const char *name, uint8_t default_value)
   return 1;
 }
 
+static uint16_t parse_timeout_ms(const char *name, uint16_t default_value)
+{
+  const char *value = getenv(name);
+  unsigned timeout;
+
+  if (!value)
+    return default_value;
+
+  timeout = (unsigned) atoi(value);
+  if (timeout < 250)
+    timeout = 250;
+  if (timeout > 60000)
+    timeout = 60000;
+  return (uint16_t) timeout;
+}
+
 void nio_driver_config_init(void)
 {
   nio_batch_sectors = parse_sector_count("FUJI_BATCH_SECTORS", DEFAULT_BATCH_SECTORS);
@@ -87,9 +104,11 @@ void nio_driver_config_init(void)
   nio_io_retries = parse_sector_count("FUJI_IO_RETRIES", DEFAULT_IO_RETRIES);
   nio_debug_io = parse_flag("FUJI_DEBUG_IO", 0);
   nio_auto_downshift = parse_flag("FUJI_AUTO_DOWNSHIFT", 1);
+  nio_network_timeout_ms = parse_timeout_ms("FUJI_NET_TIMEOUT_MS", DEFAULT_NETWORK_TIMEOUT_MS);
 
   consolef("NIO batch/read-ahead/retries: %i/%i/%i\n",
            nio_batch_sectors, nio_readahead_sectors, nio_io_retries);
+  consolef("NIO network timeout: %u ms\n", nio_network_timeout_ms);
 }
 
 static uint8_t unit_to_diskservice_slot(uint8_t unit)

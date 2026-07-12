@@ -25,6 +25,8 @@ enum {
 };
 
 extern void cdecl port_init(uint16_t base, uint16_t divisor);
+extern void cdecl port_flush_rx(void);
+extern void cdecl port_wait_tx_empty(void);
 extern uint16_t cdecl port_getbuf_slip_dual(void *hdr_buf, uint16_t hdr_len,
                                             void far *data_buf, uint16_t data_len,
                                             uint16_t timeout);

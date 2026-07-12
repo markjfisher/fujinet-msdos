@@ -18,6 +18,8 @@
 	PUBLIC	_port_uart_base
 	PUBLIC	_port_slip_last_reason
 	PUBLIC	_port_slip_last_lsr
+	PUBLIC	_port_flush_rx
+	PUBLIC	_port_wait_tx_empty
 
 	.data
 
@@ -51,6 +53,7 @@ LSR_PE		EQU	04h		; Parity Error
 LSR_FE		EQU	08h		; Framing Error
 LSR_BI		EQU	10h		; Break Interrupt
 LSR_THRE	EQU	20h		; Transmitter Holding Register Empty
+LSR_TEMT	EQU	40h		; Transmitter Empty
 
 	; Line Control Register bits
 LCR_DLAB	EQU	80h		; Divisor Latch Access Bit
@@ -65,6 +68,7 @@ MCR_OUT2	EQU	08h		; OUT2 (enables interrupts on PC)
 FCR_ENABLE	EQU	01h		; Enable FIFOs
 FCR_CLEAR_RX	EQU	02h		; Clear receive FIFO
 FCR_CLEAR_TX	EQU	04h		; Clear transmit FIFO
+FCR_TRIGGER_1	EQU	00h		; Receive trigger level: 1 byte
 
 	; BIOS Data Area
 BIOS_DATA_SEG	EQU	40h
@@ -95,6 +99,8 @@ qemu_debug_char PROC	NEAR
 qemu_debug_char ENDP
 
 	include port_init.asm
+	include port_flush_rx.asm
+	include port_wait_tx_empty.asm
 	include port_getbuf_slip_dual.asm
 	include port_putc.asm
 	include port_putbuf_slip.asm

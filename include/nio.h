@@ -110,5 +110,6 @@ extern uint8_t nio_last_status;
 extern uint16_t nio_last_rx_len;
 extern uint16_t nio_last_expected_len;
 extern uint8_t nio_last_lsr;
+extern uint16_t nio_network_timeout_ms;
 
 #endif /* _NIO_H */

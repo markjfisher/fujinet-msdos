@@ -38,6 +38,7 @@ uint8_t nio_last_status;
 uint16_t nio_last_rx_len;
 uint16_t nio_last_expected_len;
 uint8_t nio_last_lsr;
+uint16_t nio_network_timeout_ms = NIO_TIMEOUT_SLOW;
 
 static bool nio_fail(uint8_t error, uint16_t rx_len, uint16_t expected_len)
 {
@@ -115,6 +116,7 @@ bool nio_call(uint8_t device, uint8_t command,
   uint16_t rx_len;
   uint16_t rx_payload_len;
   uint16_t payload_offset;
+  uint16_t timeout;
   uint8_t status;
 
   if (response) {
@@ -138,15 +140,18 @@ bool nio_call(uint8_t device, uint8_t command,
     checksum = nio_calc_checksum(payload, payload_length, checksum);
   tx->checksum = (uint8_t) checksum;
 
+  port_flush_rx();
   port_putc(SLIP_END);
   port_putbuf_slip(tx_prefix, sizeof(*tx));
   if (payload && payload_length)
     port_putbuf_slip(payload, payload_length);
   port_putc(SLIP_END);
+  port_wait_tx_empty();
 
+  timeout = (device == NIO_DEVICEID_NETWORK) ? nio_network_timeout_ms : NIO_TIMEOUT_SLOW;
   rx_len = port_getbuf_slip_dual(&rx_header, sizeof(rx_header),
                                  rx_payload, sizeof(rx_payload),
-                                 NIO_TIMEOUT_SLOW);
+                                 timeout);
   nio_last_rx_len = rx_len;
   nio_last_lsr = port_slip_last_lsr;
   if (rx_len < sizeof(rx_header)) {
@@ -311,12 +316,14 @@ bool nio_disk_write_sector(uint8_t slot, uint32_t lba,
     checksum = nio_calc_checksum(buffer, buffer_length, checksum);
     tx->checksum = (uint8_t) checksum;
 
+    port_flush_rx();
     port_putc(SLIP_END);
     port_putbuf_slip(tx_prefix, sizeof(*tx));
     port_putbuf_slip(req_prefix, sizeof(req_prefix));
     if (buffer && buffer_length)
       port_putbuf_slip(buffer, buffer_length);
     port_putc(SLIP_END);
+    port_wait_tx_empty();
 
     rx_len = port_getbuf_slip_dual(&rx_header, sizeof(rx_header),
                                    resp, sizeof(resp), NIO_TIMEOUT_SLOW);
@@ -375,12 +382,14 @@ bool nio_disk_write_sectors(uint8_t slot, uint32_t lba, uint16_t count,
     checksum = nio_calc_checksum(buffer, buffer_length, checksum);
     tx->checksum = (uint8_t) checksum;
 
+    port_flush_rx();
     port_putc(SLIP_END);
     port_putbuf_slip(tx_prefix, sizeof(*tx));
     port_putbuf_slip(req_prefix, sizeof(req_prefix));
     if (buffer && buffer_length)
       port_putbuf_slip(buffer, buffer_length);
     port_putc(SLIP_END);
+    port_wait_tx_empty();
 
     rx_len = port_getbuf_slip_dual(&rx_header, sizeof(rx_header),
                                    resp, sizeof(resp), NIO_TIMEOUT_SLOW);
