@@ -134,6 +134,7 @@ bool fuji_bus_call(uint8_t device, uint8_t fuji_cmd, uint8_t fields,
   if (data)
     port_putbuf_slip(data, data_length);
   port_putc(SLIP_END);
+  port_wait_tx_empty();
 
   fb_packet->data = reply;
   rlen = port_getbuf_slip_dual(fb_packet, sizeof(fb_packet->header),

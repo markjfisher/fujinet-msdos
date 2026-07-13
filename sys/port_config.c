@@ -7,7 +7,9 @@
 
 #include "fujicom.h"
 #include "portio.h"
+#include "commands.h"
 #include <ctype.h>
+#include <conio.h>
 #include <dos.h>
 #include <string.h>
 #include <strings.h>
@@ -21,6 +23,24 @@
 #ifndef SERIAL_BPS
 #define SERIAL_BPS      115200
 #endif /* SERIAL_BPS */
+
+static void install_rx_irq(unsigned vector)
+{
+  unsigned irq_line;
+  uint8_t mask;
+
+  if (vector < 8 || vector > 15)
+    return;
+
+  irq_line = vector - 8;
+
+  _dos_setvect(vector, MK_FP(getCS(), port_rx_isr));
+
+  mask = (uint8_t) (inp(0x21) & ~(1 << irq_line));
+  outp(0x21, mask);
+
+  outp(port_uart_base + 1, 0x01); /* IER: received data available */
+}
 
 void fujicom_init(void)
 {
@@ -71,6 +91,7 @@ void fujicom_init(void)
 
   divisor = 115200UL / bps;
   port_init(base, divisor);
+  install_rx_irq(irq);
 #if defined(DEBUG) || defined(INIT_INFO)
   consolef("Port: %xh  BPS: %ld/%d\n", port_uart_base, (int32_t) bps, divisor);
 #endif

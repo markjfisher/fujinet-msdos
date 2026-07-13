@@ -18,7 +18,7 @@
 	PUBLIC	_port_uart_base
 	PUBLIC	_port_slip_last_reason
 	PUBLIC	_port_slip_last_lsr
-	PUBLIC	_port_tx_empty_lsr
+	PUBLIC	_port_rx_isr
 	PUBLIC	_port_flush_rx
 	PUBLIC	_port_wait_tx_empty
 
@@ -28,7 +28,9 @@
 _port_uart_base	DW	3F8h		; Default to COM1
 _port_slip_last_reason DB 0
 _port_slip_last_lsr DB 0
-_port_tx_empty_lsr DB 0
+_port_rx_head DB 0
+_port_rx_tail DB 0
+_port_rx_buf DB 16 dup(?)
 
 	.code
 
@@ -89,16 +91,67 @@ PORT_SLIP_REASON_LINE_STATUS EQU 3
 
 	.code
 
-; Debug helper - write character to QEMU debug port 0xE9
-qemu_debug_char PROC	NEAR
-	push	dx
+;-----------------------------------------------------------------------------
+; UART receive interrupt handler.
+; Drains all currently available RX bytes into a small resident ring buffer.
+;-----------------------------------------------------------------------------
+_port_rx_isr PROC NEAR
 	push	ax
-	mov	dx, 0E9h
-	out	dx, al
-	pop	ax
+	push	bx
+	push	dx
+	push	ds
+
+	push	cs
+	pop	ds
+
+	mov	dx, _port_uart_base
+	add	dx, UART_LSR_OFF
+
+rx_isr_loop:
+	in	al, dx
+	mov	ah, al
+	and	al, LSR_OE OR LSR_PE OR LSR_FE OR LSR_BI
+	jz	rx_isr_no_lsr_error
+	or	_port_slip_last_lsr, al
+	mov	_port_slip_last_reason, PORT_SLIP_REASON_LINE_STATUS
+
+rx_isr_no_lsr_error:
+	test	ah, LSR_DR
+	jz	rx_isr_done
+
+	mov	dx, _port_uart_base
+	add	dx, UART_RBR_OFF
+	in	al, dx
+
+	mov	ah, _port_rx_head
+	inc	ah
+	and	ah, 0Fh
+	cmp	ah, _port_rx_tail
+	je	rx_isr_drop
+
+	xor	bx, bx
+	mov	bl, _port_rx_head
+	mov	_port_rx_buf[bx], al
+	mov	_port_rx_head, ah
+	jmp	rx_isr_next
+
+rx_isr_drop:
+
+rx_isr_next:
+	mov	dx, _port_uart_base
+	add	dx, UART_LSR_OFF
+	jmp	rx_isr_loop
+
+rx_isr_done:
+	mov	al, 20h
+	out	20h, al
+
+	pop	ds
 	pop	dx
-	ret
-qemu_debug_char ENDP
+	pop	bx
+	pop	ax
+	iret
+_port_rx_isr ENDP
 
 	include port_init.asm
 	include port_flush_rx.asm

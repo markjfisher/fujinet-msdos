@@ -16,7 +16,6 @@
 extern uint16_t port_uart_base;
 extern uint8_t port_slip_last_reason;
 extern uint8_t port_slip_last_lsr;
-extern uint8_t port_tx_empty_lsr;
 
 enum {
     PORT_SLIP_REASON_NONE = 0,
@@ -26,6 +25,7 @@ enum {
 };
 
 extern void cdecl port_init(uint16_t base, uint16_t divisor);
+extern void cdecl port_rx_isr(void);
 extern void cdecl port_flush_rx(void);
 extern void cdecl port_wait_tx_empty(void);
 extern uint16_t cdecl port_getbuf_slip_dual(void *hdr_buf, uint16_t hdr_len,

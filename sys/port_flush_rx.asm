@@ -8,6 +8,12 @@ _port_flush_rx PROC NEAR
 	push	dx
 	push	ax
 
+	; Clear the interrupt receive ring as well as the hardware FIFO.
+	cli
+	xor	ax, ax
+	mov	_port_rx_head, al
+	mov	_port_rx_tail, al
+
 	; Clear 16550-compatible RX FIFO and keep FIFO enabled at 1-byte trigger.
 	mov	dx, _port_uart_base
 	add	dx, UART_FCR_OFF
@@ -27,6 +33,7 @@ flush_rx_loop:
 	jmp	flush_rx_loop
 
 flush_rx_done:
+	sti
 	pop	ax
 	pop	dx
 	ret

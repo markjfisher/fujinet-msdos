@@ -6,68 +6,58 @@
 ; On exit: AL = character received, or jumps to timeout_label if timeout
 ; Destroys: AH, DX
 ;-----------------------------------------------------------------------------
-SLIPD_WAIT_CHAR_IDLE MACRO timeout_label
-	LOCAL wait_loop, no_lsr_error, got_char
+SLIPD_TRY_RING_CHAR MACRO no_char_label
+	LOCAL no_ring_char, got_char
+
+	push	bx
+	cli
+	mov	al, cs:_port_rx_tail
+	cmp	al, cs:_port_rx_head
+	je	no_ring_char
+	xor	bx, bx
+	mov	bl, al
+	mov	al, cs:_port_rx_buf[bx]
+	inc	bl
+	and	bl, 0Fh
+	mov	cs:_port_rx_tail, bl
+	pop	bx
+	jmp	got_char
+
+no_ring_char:
+	pop	bx
+	jmp	no_char_label
+
+got_char:
+ENDM
+
+SLIPD_WAIT_CHAR MACRO timeout_label
+	LOCAL wait_loop, no_lsr_error, got_char, no_ring_char, slipd_no_uart_char
 
 	mov	dx, SLIPD_LOCAL_UART_BASE
 	add	dx, UART_LSR_OFF
 
 wait_loop:
-	sti
+	SLIPD_TRY_RING_CHAR no_ring_char
+	jmp	got_char
+no_ring_char:
+	cli
 	in	al, dx
 	push	ax
 	and	al, LSR_OE OR LSR_PE OR LSR_FE OR LSR_BI
 	jz	no_lsr_error
-	or	_port_slip_last_lsr, al
-	mov	_port_slip_last_reason, PORT_SLIP_REASON_LINE_STATUS
+	or	cs:_port_slip_last_lsr, al
+	mov	cs:_port_slip_last_reason, PORT_SLIP_REASON_LINE_STATUS
 no_lsr_error:
 	pop	ax
 	test	al, LSR_DR
-	jnz	got_char
+	jz	slipd_no_uart_char
 
-	mov	ax, es:[BIOS_TICK_OFFSET]
-	sub	ax, si
-	cmp	ax, SLIPD_PARAM_TIMEOUT
-	jb	wait_loop
-
-	mov	_port_slip_last_reason, PORT_SLIP_REASON_TIMEOUT
-	jmp	timeout_label
-
-got_char:
-	cli
 	mov	dx, SLIPD_LOCAL_UART_BASE
 	add	dx, UART_RBR_OFF
 	in	al, dx
-ENDM
+	jmp	got_char
 
-SLIPD_WAIT_CHAR_ACTIVE MACRO timeout_label
-	LOCAL wait_loop, skip_timeout, no_lsr_error, got_char
-
-	mov	dx, SLIPD_LOCAL_UART_BASE
-	add	dx, UART_LSR_OFF
-
-wait_loop:
-	cli
-	; Keep interrupt windows sparse while waiting for response bytes.
-	; If an interrupt handler runs just as FujiNet starts a short 115200 baud
-	; response, the 16-byte UART FIFO can overrun before polling resumes.
-	mov	ah, 255
-
-skip_timeout:
-	in	al, dx
-	push	ax
-	and	al, LSR_OE OR LSR_PE OR LSR_FE OR LSR_BI
-	jz	no_lsr_error
-	or	_port_slip_last_lsr, al
-	mov	_port_slip_last_reason, PORT_SLIP_REASON_LINE_STATUS
-no_lsr_error:
-	pop	ax
-	test	al, LSR_DR
-	jnz	got_char
-
-	dec	ah
-	jnz	skip_timeout
-
+slipd_no_uart_char:
 	sti
 	mov	ax, es:[BIOS_TICK_OFFSET]
 	sub	ax, si
@@ -75,14 +65,11 @@ no_lsr_error:
 	jb	wait_loop
 
 	; Timeout occurred
-	mov	_port_slip_last_reason, PORT_SLIP_REASON_TIMEOUT
+	mov	cs:_port_slip_last_reason, PORT_SLIP_REASON_TIMEOUT
 	jmp	timeout_label
 
 got_char:
 	cli
-	mov	dx, SLIPD_LOCAL_UART_BASE
-	add	dx, UART_RBR_OFF
-	in	al, dx
 ENDM
 
 ;-----------------------------------------------------------------------------
@@ -91,7 +78,7 @@ ENDM
 ; Destroys: DX
 ;-----------------------------------------------------------------------------
 SLIPD_TRY_CHAR MACRO no_char_label
-	LOCAL no_lsr_error, got_char
+	LOCAL no_lsr_error, got_char, slipd_no_uart_char
 
 	mov	dx, SLIPD_LOCAL_UART_BASE
 	add	dx, UART_LSR_OFF
@@ -101,19 +88,23 @@ SLIPD_TRY_CHAR MACRO no_char_label
 	push	ax
 	and	al, LSR_OE OR LSR_PE OR LSR_FE OR LSR_BI
 	jz	no_lsr_error
-	or	_port_slip_last_lsr, al
-	mov	_port_slip_last_reason, PORT_SLIP_REASON_LINE_STATUS
+	or	cs:_port_slip_last_lsr, al
+	mov	cs:_port_slip_last_reason, PORT_SLIP_REASON_LINE_STATUS
 no_lsr_error:
 	pop	ax
 	test	al, LSR_DR
-	jnz	got_char
+	jz	slipd_no_uart_char
+
+	mov	dx, SLIPD_LOCAL_UART_BASE
+	add	dx, UART_RBR_OFF
+	in	al, dx
+	jmp	got_char
+
+slipd_no_uart_char:
 	sti
 	jmp	no_char_label
 
 got_char:
-	mov	dx, SLIPD_LOCAL_UART_BASE
-	add	dx, UART_RBR_OFF
-	in	al, dx
 ENDM
 
 ;-----------------------------------------------------------------------------
@@ -182,8 +173,8 @@ _port_getbuf_slip_dual PROC NEAR
 
 	push	ds			; [bp-14] Save original DS
 
-	mov	_port_slip_last_reason, PORT_SLIP_REASON_NONE
-	mov	_port_slip_last_lsr, 0
+	mov	cs:_port_slip_last_reason, PORT_SLIP_REASON_NONE
+	mov	cs:_port_slip_last_lsr, 0
 
 	mov	di, SLIPD_PARAM_HDR_BUF	; Start with header buffer
 	mov	cx, SLIPD_PARAM_HDR_LEN	; CX = header length (remaining)
@@ -214,29 +205,17 @@ _port_getbuf_slip_dual PROC NEAR
 	mov	ax, BIOS_DATA_SEG
 	mov	es, ax
 
-	; Collapse the TX->RX handoff: wait here until the final request byte has
-	; physically left the UART, then immediately begin receive sync without
-	; returning through C.
-	mov	dx, SLIPD_LOCAL_UART_BASE
-	add	dx, UART_LSR_OFF
-slipd_wait_tx_empty:
-	cli
-	in	al, dx
-	test	al, LSR_TEMT
-	jz	slipd_wait_tx_empty
-	mov	_port_tx_empty_lsr, al
-
 	; Phase 1: Sync to frame - discard until SLIP_END
 slipd_sync:
 	mov	si, es:[BIOS_TICK_OFFSET]
-	SLIPD_WAIT_CHAR_ACTIVE slipd_done
+	SLIPD_WAIT_CHAR slipd_done
 	cmp	al, SLIP_END
 	jne	slipd_sync
 
 	; Phase 2: Skip additional SLIP_END bytes
 slipd_skip_end:
 	mov	si, es:[BIOS_TICK_OFFSET]
-	SLIPD_WAIT_CHAR_ACTIVE slipd_done
+	SLIPD_WAIT_CHAR slipd_done
 	cmp	al, SLIP_END
 	je	slipd_skip_end
 
@@ -260,7 +239,7 @@ slipd_store_byte:
 	mov	cx, SLIPD_PARAM_DATA_LEN
 	test	cx, cx
 	jnz	slipd_switch_to_data
-	mov	_port_slip_last_reason, PORT_SLIP_REASON_BUFFER_FULL
+	mov	cs:_port_slip_last_reason, PORT_SLIP_REASON_BUFFER_FULL
 	jmp	slipd_done		; No data buffer, we're done
 
 slipd_switch_to_data:
@@ -282,7 +261,7 @@ slipd_read_next:
 
 slipd_wait_next:
 	mov	si, es:[BIOS_TICK_OFFSET]
-	SLIPD_WAIT_CHAR_ACTIVE slipd_done
+	SLIPD_WAIT_CHAR slipd_done
 	jmp	slipd_decode_loop
 
 slipd_handle_escape:
@@ -293,7 +272,7 @@ slipd_handle_escape:
 
 slipd_wait_escape:
 	mov	si, es:[BIOS_TICK_OFFSET]
-	SLIPD_WAIT_CHAR_ACTIVE slipd_done
+	SLIPD_WAIT_CHAR slipd_done
 
 slipd_decode_escape:
 	; Decode escape sequence

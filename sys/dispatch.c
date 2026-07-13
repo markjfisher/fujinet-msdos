@@ -10,7 +10,7 @@
 
 #define STACK_SWAP
 #ifdef STACK_SWAP
-#define STACK_SIZE 1024
+#define STACK_SIZE 896
 char our_stack[STACK_SIZE];     /* our internal stack */
 uint16_t dos_ss;                    /* DOS's saved SS at entry */
 uint16_t dos_sp;                    /* DOS's saved SP at entry */
