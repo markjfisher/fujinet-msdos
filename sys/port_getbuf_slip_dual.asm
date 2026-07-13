@@ -1,5 +1,7 @@
 	PUBLIC	_port_getbuf_slip_dual
 
+SLIPD_ACTIVE_POLL_COUNT EQU	4096
+
 ;-----------------------------------------------------------------------------
 ; Macro to wait for a character with timeout
 ; On entry: SI = start tick count, ES = BIOS_DATA_SEG
@@ -45,13 +47,13 @@ SLIPD_WAIT_CHAR_ACTIVE MACRO timeout_label
 
 	mov	dx, SLIPD_LOCAL_UART_BASE
 	add	dx, UART_LSR_OFF
+	push	cx
 
 wait_loop:
 	cli
-	; Keep interrupt windows sparse while waiting for response bytes.
-	; If an interrupt handler runs just as FujiNet starts a short 115200 baud
-	; response, the 16-byte UART FIFO can overrun before polling resumes.
-	mov	ah, 255
+	; Active frames are short, so avoid handing control to interrupt
+	; handlers between bytes unless the line is genuinely idle.
+	mov	cx, SLIPD_ACTIVE_POLL_COUNT
 
 skip_timeout:
 	in	al, dx
@@ -65,8 +67,7 @@ no_lsr_error:
 	test	al, LSR_DR
 	jnz	got_char
 
-	dec	ah
-	jnz	skip_timeout
+	loop	skip_timeout
 
 	sti
 	mov	ax, es:[BIOS_TICK_OFFSET]
@@ -76,10 +77,12 @@ no_lsr_error:
 
 	; Timeout occurred
 	mov	_port_slip_last_reason, PORT_SLIP_REASON_TIMEOUT
+	pop	cx
 	jmp	timeout_label
 
 got_char:
 	cli
+	pop	cx
 	mov	dx, SLIPD_LOCAL_UART_BASE
 	add	dx, UART_RBR_OFF
 	in	al, dx
