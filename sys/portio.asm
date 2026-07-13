@@ -18,6 +18,7 @@
 	PUBLIC	_port_uart_base
 	PUBLIC	_port_slip_last_reason
 	PUBLIC	_port_slip_last_lsr
+	PUBLIC	_port_tx_empty_lsr
 	PUBLIC	_port_flush_rx
 	PUBLIC	_port_wait_tx_empty
 
@@ -27,6 +28,7 @@
 _port_uart_base	DW	3F8h		; Default to COM1
 _port_slip_last_reason DB 0
 _port_slip_last_lsr DB 0
+_port_tx_empty_lsr DB 0
 
 	.code
 

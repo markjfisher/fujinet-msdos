@@ -259,14 +259,13 @@ static bool nio_call_once(uint8_t device, uint8_t command,
     tx_encoded_len += port_putbuf_slip(payload, payload_length);
   port_putc(SLIP_END);
   tx_encoded_len++;
-  port_wait_tx_empty();
   nio_last_tx_encoded_len = tx_encoded_len;
-  nio_last_post_tx_lsr = nio_read_lsr();
 
   timeout = (device == NIO_DEVICEID_NETWORK) ? nio_network_timeout_ms : NIO_TIMEOUT_SLOW;
   rx_len = port_getbuf_slip_dual(&rx_header, sizeof(rx_header),
                                  rx_payload, sizeof(rx_payload),
                                  timeout);
+  nio_last_post_tx_lsr = port_tx_empty_lsr;
   nio_last_rx_len = rx_len;
   nio_last_lsr = port_slip_last_lsr;
   if (rx_len < sizeof(rx_header)) {
@@ -503,7 +502,6 @@ bool nio_disk_write_sector(uint8_t slot, uint32_t lba,
     if (buffer && buffer_length)
       port_putbuf_slip(buffer, buffer_length);
     port_putc(SLIP_END);
-    port_wait_tx_empty();
 
     rx_len = port_getbuf_slip_dual(&rx_header, sizeof(rx_header),
                                    resp, sizeof(resp), NIO_TIMEOUT_SLOW);
@@ -569,7 +567,6 @@ bool nio_disk_write_sectors(uint8_t slot, uint32_t lba, uint16_t count,
     if (buffer && buffer_length)
       port_putbuf_slip(buffer, buffer_length);
     port_putc(SLIP_END);
-    port_wait_tx_empty();
 
     rx_len = port_getbuf_slip_dual(&rx_header, sizeof(rx_header),
                                    resp, sizeof(resp), NIO_TIMEOUT_SLOW);

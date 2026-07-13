@@ -1,7 +1,5 @@
 	PUBLIC	_port_getbuf_slip_dual
 
-SLIPD_ACTIVE_POLL_COUNT EQU	4096
-
 ;-----------------------------------------------------------------------------
 ; Macro to wait for a character with timeout
 ; On entry: SI = start tick count, ES = BIOS_DATA_SEG
@@ -47,13 +45,13 @@ SLIPD_WAIT_CHAR_ACTIVE MACRO timeout_label
 
 	mov	dx, SLIPD_LOCAL_UART_BASE
 	add	dx, UART_LSR_OFF
-	push	cx
 
 wait_loop:
 	cli
-	; Active frames are short, so avoid handing control to interrupt
-	; handlers between bytes unless the line is genuinely idle.
-	mov	cx, SLIPD_ACTIVE_POLL_COUNT
+	; Keep interrupt windows sparse while waiting for response bytes.
+	; If an interrupt handler runs just as FujiNet starts a short 115200 baud
+	; response, the 16-byte UART FIFO can overrun before polling resumes.
+	mov	ah, 255
 
 skip_timeout:
 	in	al, dx
@@ -67,7 +65,8 @@ no_lsr_error:
 	test	al, LSR_DR
 	jnz	got_char
 
-	loop	skip_timeout
+	dec	ah
+	jnz	skip_timeout
 
 	sti
 	mov	ax, es:[BIOS_TICK_OFFSET]
@@ -77,12 +76,10 @@ no_lsr_error:
 
 	; Timeout occurred
 	mov	_port_slip_last_reason, PORT_SLIP_REASON_TIMEOUT
-	pop	cx
 	jmp	timeout_label
 
 got_char:
 	cli
-	pop	cx
 	mov	dx, SLIPD_LOCAL_UART_BASE
 	add	dx, UART_RBR_OFF
 	in	al, dx
@@ -217,17 +214,29 @@ _port_getbuf_slip_dual PROC NEAR
 	mov	ax, BIOS_DATA_SEG
 	mov	es, ax
 
+	; Collapse the TX->RX handoff: wait here until the final request byte has
+	; physically left the UART, then immediately begin receive sync without
+	; returning through C.
+	mov	dx, SLIPD_LOCAL_UART_BASE
+	add	dx, UART_LSR_OFF
+slipd_wait_tx_empty:
+	cli
+	in	al, dx
+	test	al, LSR_TEMT
+	jz	slipd_wait_tx_empty
+	mov	_port_tx_empty_lsr, al
+
 	; Phase 1: Sync to frame - discard until SLIP_END
 slipd_sync:
 	mov	si, es:[BIOS_TICK_OFFSET]
-	SLIPD_WAIT_CHAR_IDLE slipd_done
+	SLIPD_WAIT_CHAR_ACTIVE slipd_done
 	cmp	al, SLIP_END
 	jne	slipd_sync
 
 	; Phase 2: Skip additional SLIP_END bytes
 slipd_skip_end:
 	mov	si, es:[BIOS_TICK_OFFSET]
-	SLIPD_WAIT_CHAR_IDLE slipd_done
+	SLIPD_WAIT_CHAR_ACTIVE slipd_done
 	cmp	al, SLIP_END
 	je	slipd_skip_end
 
