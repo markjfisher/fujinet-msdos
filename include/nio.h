@@ -111,6 +111,9 @@ typedef struct {
   uint16_t rx_len;
   uint16_t expected_len;
   uint8_t request_prefix[NIO_DIAG_REQ_PREFIX];
+  uint16_t tx_encoded_len;
+  uint8_t pre_flush_lsr;
+  uint8_t post_tx_lsr;
 } nio_diag_record_t;
 
 extern bool nio_call(uint8_t device, uint8_t command,

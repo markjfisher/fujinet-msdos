@@ -50,7 +50,7 @@ static void write_record(FILE *out, const nio_diag_record_t *rec)
   fprintf(out,
           "seq=%lu tick=%lu event=%u attempt=%u/%u dev=%02X cmd=%02X "
           "err=%u st=%u rx=%u exp=%u lsr=%02X reason=%u "
-          "req=%u cap=%u timeout=%u prefix=",
+          "req=%u cap=%u timeout=%u tx=%u pre=%02X post=%02X prefix=",
           (unsigned long) rec->seq,
           (unsigned long) rec->tick,
           rec->event,
@@ -66,7 +66,10 @@ static void write_record(FILE *out, const nio_diag_record_t *rec)
           rec->slip_reason,
           rec->request_len,
           rec->reply_capacity,
-          rec->timeout_ms);
+          rec->timeout_ms,
+          rec->tx_encoded_len,
+          rec->pre_flush_lsr,
+          rec->post_tx_lsr);
   print_prefix(out, rec->request_prefix);
   fputc('\n', out);
 }

@@ -4,6 +4,7 @@
 
 #include "nio.h"
 #include "portio.h"
+#include <conio.h>
 #include <dos.h>
 #include <string.h>
 
@@ -40,6 +41,9 @@ static uint16_t nio_diag_head;
 static uint16_t nio_diag_used;
 static uint32_t nio_diag_seq;
 static uint32_t nio_diag_drop_count;
+static uint16_t nio_last_tx_encoded_len;
+static uint8_t nio_last_pre_flush_lsr;
+static uint8_t nio_last_post_tx_lsr;
 uint8_t nio_last_error;
 uint8_t nio_last_status;
 uint16_t nio_last_rx_len;
@@ -52,6 +56,11 @@ static uint32_t bios_tick(void)
 {
   uint32_t far *ticks = (uint32_t far *) MK_FP(0x40, 0x6c);
   return *ticks;
+}
+
+static uint8_t nio_read_lsr(void)
+{
+  return inp((uint16_t) (port_uart_base + 5));
 }
 
 static void nio_diag_log(uint8_t attempt, uint8_t max_attempts,
@@ -82,6 +91,9 @@ static void nio_diag_log(uint8_t attempt, uint8_t max_attempts,
   rec->timeout_ms = timeout_ms;
   rec->rx_len = nio_last_rx_len;
   rec->expected_len = nio_last_expected_len;
+  rec->tx_encoded_len = nio_last_tx_encoded_len;
+  rec->pre_flush_lsr = nio_last_pre_flush_lsr;
+  rec->post_tx_lsr = nio_last_post_tx_lsr;
 
   if (request_prefix)
     _fmemcpy(rec->request_prefix, request_prefix, NIO_DIAG_REQ_PREFIX);
@@ -229,6 +241,7 @@ static bool nio_call_once(uint8_t device, uint8_t command,
   uint16_t rx_payload_len;
   uint16_t payload_offset;
   uint16_t timeout;
+  uint16_t tx_encoded_len;
   uint8_t status;
 
   if (response) {
@@ -236,13 +249,19 @@ static bool nio_call_once(uint8_t device, uint8_t command,
     response->payload_length = 0;
   }
 
+  nio_last_pre_flush_lsr = nio_read_lsr();
   port_flush_rx();
+  tx_encoded_len = 0;
   port_putc(SLIP_END);
-  port_putbuf_slip(tx_prefix, sizeof(*tx));
+  tx_encoded_len++;
+  tx_encoded_len += port_putbuf_slip(tx_prefix, sizeof(*tx));
   if (payload && payload_length)
-    port_putbuf_slip(payload, payload_length);
+    tx_encoded_len += port_putbuf_slip(payload, payload_length);
   port_putc(SLIP_END);
+  tx_encoded_len++;
   port_wait_tx_empty();
+  nio_last_tx_encoded_len = tx_encoded_len;
+  nio_last_post_tx_lsr = nio_read_lsr();
 
   timeout = (device == NIO_DEVICEID_NETWORK) ? nio_network_timeout_ms : NIO_TIMEOUT_SLOW;
   rx_len = port_getbuf_slip_dual(&rx_header, sizeof(rx_header),
@@ -335,6 +354,9 @@ bool nio_call(uint8_t device, uint8_t command,
     nio_last_rx_len = 0;
     nio_last_expected_len = 0;
     nio_last_lsr = 0;
+    nio_last_tx_encoded_len = 0;
+    nio_last_pre_flush_lsr = 0;
+    nio_last_post_tx_lsr = 0;
 
     if (nio_call_once(device, command, payload, payload_length,
                       reply, reply_capacity, response)) {
