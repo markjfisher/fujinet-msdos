@@ -4,6 +4,7 @@
 
 #include "nio.h"
 #include "nio_protocol.h"
+#include "nio_transaction.h"
 #include "portio.h"
 #include <string.h>
 
@@ -11,13 +12,6 @@
 #define NIO_MAX_RX       9216
 #define NIO_MAX_TX_PREFIX 32
 #define NIO_MAX_STALE_RESPONSES 2
-
-enum {
-  SLIP_END     = 0xC0,
-  SLIP_ESCAPE  = 0xDB,
-  SLIP_ESC_END = 0xDC,
-  SLIP_ESC_ESC = 0xDD,
-};
 
 static uint8_t tx_prefix[NIO_MAX_TX_PREFIX];
 static uint8_t rx_payload[NIO_MAX_RX];
@@ -38,20 +32,79 @@ static bool nio_fail(uint8_t error, uint16_t rx_len, uint16_t expected_len)
   return false;
 }
 
-static uint8_t nio_port_error(uint8_t fallback)
+static void nio_port_flush_rx(void *ctx)
 {
-  if (port_slip_last_lsr)
-    return NIO_ERR_UART;
-  switch (port_slip_last_reason) {
-  case PORT_SLIP_REASON_TIMEOUT:
-    return NIO_ERR_TIMEOUT;
-  case PORT_SLIP_REASON_BUFFER_FULL:
-    return NIO_ERR_BUFFER_FULL;
-  case PORT_SLIP_REASON_LINE_STATUS:
-    return NIO_ERR_UART;
-  default:
-    return fallback;
-  }
+  (void) ctx;
+  port_flush_rx();
+}
+
+static int nio_port_putc(void *ctx, uint8_t c)
+{
+  (void) ctx;
+  return port_putc(c);
+}
+
+static uint16_t nio_port_putbuf_slip(void *ctx, const void far *buf,
+                                     uint16_t len)
+{
+  (void) ctx;
+  return port_putbuf_slip(buf, len);
+}
+
+static void nio_port_wait_tx_empty(void *ctx)
+{
+  (void) ctx;
+  port_wait_tx_empty();
+}
+
+static uint16_t nio_port_getbuf_slip_dual(void *ctx,
+                                          void *hdr_buf, uint16_t hdr_len,
+                                          void far *data_buf,
+                                          uint16_t data_len,
+                                          uint16_t timeout)
+{
+  (void) ctx;
+  return port_getbuf_slip_dual(hdr_buf, hdr_len, data_buf, data_len, timeout);
+}
+
+static uint8_t nio_port_last_slip_reason(void *ctx)
+{
+  (void) ctx;
+  return port_slip_last_reason;
+}
+
+static uint8_t nio_port_last_lsr(void *ctx)
+{
+  (void) ctx;
+  return port_slip_last_lsr;
+}
+
+static nio_transaction_port_t nio_port;
+static nio_transaction_buffers_t nio_buffers;
+static nio_transaction_diag_t nio_diag;
+static uint8_t nio_transaction_bound;
+
+static void nio_bind_transaction(void)
+{
+  if (nio_transaction_bound)
+    return;
+
+  nio_port.ctx = 0;
+  nio_port.flush_rx = nio_port_flush_rx;
+  nio_port.putc = nio_port_putc;
+  nio_port.putbuf_slip = nio_port_putbuf_slip;
+  nio_port.wait_tx_empty = nio_port_wait_tx_empty;
+  nio_port.getbuf_slip_dual = nio_port_getbuf_slip_dual;
+  nio_port.last_slip_reason = nio_port_last_slip_reason;
+  nio_port.last_lsr = nio_port_last_lsr;
+
+  nio_buffers.tx_prefix = tx_prefix;
+  nio_buffers.tx_prefix_capacity = sizeof(tx_prefix);
+  nio_buffers.rx_header = &rx_header;
+  nio_buffers.rx_payload = rx_payload;
+  nio_buffers.rx_payload_capacity = sizeof(rx_payload);
+
+  nio_transaction_bound = 1;
 }
 
 static void put_u16le(uint8_t far *p, uint16_t v)
@@ -86,121 +139,25 @@ bool nio_status_ok(uint8_t status)
   return status == NIO_STATUS_OK;
 }
 
-static bool nio_should_retry_error(uint8_t error)
-{
-  switch (error) {
-  case NIO_ERR_UART:
-  case NIO_ERR_TIMEOUT:
-  case NIO_ERR_SHORT_FRAME:
-  case NIO_ERR_LENGTH_MISMATCH:
-  case NIO_ERR_CHECKSUM:
-    return true;
-  default:
-    return false;
-  }
-}
-
-static bool nio_call_once(uint8_t device, uint8_t command,
-                          const void far *payload, uint16_t payload_length,
-                          void far *reply, uint16_t reply_capacity,
-                          nio_response_t far *response)
-{
-  nio_frame_header_t *tx = (nio_frame_header_t *) tx_prefix;
-  uint16_t rx_len;
-  uint16_t rx_payload_len;
-  uint16_t timeout;
-  nio_parsed_response_t parsed;
-  uint8_t parse_error;
-  uint8_t stale_count = 0;
-
-  if (response) {
-    response->status = NIO_STATUS_INTERNAL_ERROR;
-    response->payload_length = 0;
-  }
-
-  port_flush_rx();
-  port_putc(SLIP_END);
-  port_putbuf_slip(tx_prefix, sizeof(*tx));
-  if (payload && payload_length)
-    port_putbuf_slip(payload, payload_length);
-  port_putc(SLIP_END);
-  port_wait_tx_empty();
-
-  timeout = (device == NIO_DEVICEID_NETWORK) ? nio_network_timeout_ms : NIO_TIMEOUT_SLOW;
-
-read_response:
-  rx_len = port_getbuf_slip_dual(&rx_header, sizeof(rx_header),
-                                 rx_payload, sizeof(rx_payload),
-                                 timeout);
-  nio_last_rx_len = rx_len;
-  nio_last_lsr = port_slip_last_lsr;
-
-  parse_error = nio_protocol_validate_response(&rx_header, rx_payload, rx_len,
-                                               device, command, reply_capacity,
-                                               &parsed);
-  nio_last_expected_len = parsed.expected_len;
-  if (parse_error == NIO_PROTO_ERR_DEVICE_COMMAND) {
-    if (++stale_count <= NIO_MAX_STALE_RESPONSES)
-      goto read_response;
-    return nio_fail(parse_error, rx_len, parsed.expected_len);
-  }
-  if (parse_error != NIO_PROTO_OK)
-    return nio_fail(nio_port_error(parse_error), rx_len, parsed.expected_len);
-
-  nio_last_status = parsed.status;
-  rx_payload_len = parsed.payload_length;
-  if (reply && rx_payload_len)
-    _fmemmove(reply, rx_payload + parsed.payload_offset, rx_payload_len);
-
-  if (response) {
-    response->status = parsed.status;
-    response->payload_length = rx_payload_len;
-  }
-
-  return true;
-}
-
 bool nio_call(uint8_t device, uint8_t command,
               const void far *payload, uint16_t payload_length,
               void far *reply, uint16_t reply_capacity,
               nio_response_t far *response)
 {
-  nio_frame_header_t *tx = (nio_frame_header_t *) tx_prefix;
-  uint16_t checksum;
-  uint8_t attempt;
-  uint8_t max_attempts;
+  bool ok;
 
-  tx->device = device;
-  tx->command = command;
-  tx->length = sizeof(*tx) + payload_length;
-  tx->checksum = 0;
-  tx->fields = NIO_PROTO_FIELD_NONE;
-
-  checksum = nio_protocol_checksum(tx, sizeof(*tx), 0);
-  if (payload)
-    checksum = nio_protocol_checksum(payload, payload_length, checksum);
-  tx->checksum = (uint8_t) checksum;
-
-  max_attempts = (uint8_t) (nio_transport_retries + 1);
-  if (max_attempts == 0)
-    max_attempts = 1;
-
-  for (attempt = 0; attempt < max_attempts; attempt++) {
-    nio_last_error = NIO_ERR_NONE;
-    nio_last_status = NIO_STATUS_INTERNAL_ERROR;
-    nio_last_rx_len = 0;
-    nio_last_expected_len = 0;
-    nio_last_lsr = 0;
-
-    if (nio_call_once(device, command, payload, payload_length,
-                      reply, reply_capacity, response))
-      return true;
-
-    if (!nio_should_retry_error(nio_last_error))
-      return false;
-  }
-
-  return false;
+  nio_bind_transaction();
+  ok = nio_transaction_call(&nio_port, &nio_buffers, device, command,
+                            payload, payload_length, reply, reply_capacity,
+                            response, nio_transport_retries,
+                            nio_network_timeout_ms, NIO_TIMEOUT_SLOW,
+                            NIO_MAX_STALE_RESPONSES, &nio_diag);
+  nio_last_error = nio_diag.error;
+  nio_last_status = nio_diag.status;
+  nio_last_rx_len = nio_diag.rx_len;
+  nio_last_expected_len = nio_diag.expected_len;
+  nio_last_lsr = nio_diag.lsr;
+  return ok;
 }
 
 bool nio_disk_info(uint8_t slot, nio_disk_info_t far *info)
@@ -326,12 +283,12 @@ bool nio_disk_write_sector(uint8_t slot, uint32_t lba,
     tx->checksum = (uint8_t) checksum;
 
     port_flush_rx();
-    port_putc(SLIP_END);
+    port_putc(NIO_TRANSACTION_SLIP_END);
     port_putbuf_slip(tx_prefix, sizeof(*tx));
     port_putbuf_slip(req_prefix, sizeof(req_prefix));
     if (buffer && buffer_length)
       port_putbuf_slip(buffer, buffer_length);
-    port_putc(SLIP_END);
+    port_putc(NIO_TRANSACTION_SLIP_END);
     port_wait_tx_empty();
 
     rx_len = port_getbuf_slip_dual(&rx_header, sizeof(rx_header),
@@ -389,12 +346,12 @@ bool nio_disk_write_sectors(uint8_t slot, uint32_t lba, uint16_t count,
     tx->checksum = (uint8_t) checksum;
 
     port_flush_rx();
-    port_putc(SLIP_END);
+    port_putc(NIO_TRANSACTION_SLIP_END);
     port_putbuf_slip(tx_prefix, sizeof(*tx));
     port_putbuf_slip(req_prefix, sizeof(req_prefix));
     if (buffer && buffer_length)
       port_putbuf_slip(buffer, buffer_length);
-    port_putc(SLIP_END);
+    port_putc(NIO_TRANSACTION_SLIP_END);
     port_wait_tx_empty();
 
     rx_len = port_getbuf_slip_dual(&rx_header, sizeof(rx_header),
