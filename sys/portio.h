@@ -16,6 +16,8 @@
 extern uint16_t port_uart_base;
 extern uint8_t port_slip_last_reason;
 extern uint8_t port_slip_last_lsr;
+extern uint16_t port_rx_isr_count;
+extern uint16_t port_rx_isr_bytes;
 
 enum {
     PORT_SLIP_REASON_NONE = 0,

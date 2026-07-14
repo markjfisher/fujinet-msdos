@@ -9,7 +9,8 @@
 #define FUJI_IOCTL_MAX_DATA  512
 #define FUJI_IOCTL_MAX_URI   255
 #define FUJI_IOCTL_MAX_PATH  127
-#define FUJI_IOCTL_NIO_DIAG_MAX_RECORDS 8
+#define FUJI_IOCTL_NIO_DIAG_MAX_RECORDS 4
+#define FUJI_IOCTL_NIO_DIAG_MAX_COMPACT_RECORDS 24
 
 enum {
   FUJI_IOCTL_QUERY = 0,
@@ -81,7 +82,13 @@ typedef struct {
   uint16_t available;
   uint32_t total;
   uint32_t dropped;
+  uint16_t compact_record_size;
+  uint16_t compact_record_count;
+  uint16_t compact_available;
+  uint32_t compact_total;
+  uint32_t compact_dropped;
   nio_diag_record_t records[FUJI_IOCTL_NIO_DIAG_MAX_RECORDS];
+  nio_diag_compact_record_t compact[FUJI_IOCTL_NIO_DIAG_MAX_COMPACT_RECORDS];
 } fuji_ioctl_nio_diag;
 
 #endif /* FUJI_IOCTL_H */

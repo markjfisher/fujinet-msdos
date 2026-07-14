@@ -116,6 +116,17 @@ typedef struct {
   uint8_t post_tx_lsr;
 } nio_diag_record_t;
 
+typedef struct {
+  uint16_t tick_low;
+  uint16_t delta_ticks;
+  uint16_t isr_count_delta;
+  uint16_t isr_bytes_delta;
+  uint8_t command;
+  uint8_t error;
+  uint8_t lsr;
+  uint8_t slip_reason;
+} nio_diag_compact_record_t;
+
 extern bool nio_call(uint8_t device, uint8_t command,
                      const void far *payload, uint16_t payload_length,
                      void far *reply, uint16_t reply_capacity,
@@ -126,6 +137,11 @@ extern uint32_t nio_diag_total(void);
 extern uint32_t nio_diag_dropped(void);
 extern uint16_t nio_diag_read(uint16_t start, uint16_t max_records,
                               nio_diag_record_t far *records);
+extern uint16_t nio_diag_compact_count(void);
+extern uint32_t nio_diag_compact_total(void);
+extern uint32_t nio_diag_compact_dropped(void);
+extern uint16_t nio_diag_compact_read(uint16_t start, uint16_t max_records,
+                                      nio_diag_compact_record_t far *records);
 extern void nio_diag_clear(void);
 
 extern bool nio_disk_info(uint8_t slot, nio_disk_info_t far *info);

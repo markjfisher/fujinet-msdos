@@ -11,13 +11,13 @@
 #undef DEBUG
 
 #define SECTOR_SIZE     512
-#define MAX_BATCH_SECTORS 16
-#define DEFAULT_BATCH_SECTORS 16
-#define DEFAULT_READAHEAD_SECTORS 16
+#define MAX_BATCH_SECTORS 8
+#define DEFAULT_BATCH_SECTORS 8
+#define DEFAULT_READAHEAD_SECTORS 8
 #define DEFAULT_IO_RETRIES 2
 #define DEFAULT_NIO_RETRIES 2
 #define DEFAULT_NETWORK_TIMEOUT_MS (15 * 1000)
-#define CACHE_SECTORS 56
+#define CACHE_SECTORS 8
 
 extern void End_code(void);
 
@@ -386,6 +386,13 @@ static uint16_t handle_ioctl_buffer(SYSREQ far *req)
     diag->total = nio_diag_total();
     diag->dropped = nio_diag_dropped();
     diag->record_count = nio_diag_read(diag->start, max_records, diag->records);
+    diag->compact_record_size = sizeof(nio_diag_compact_record_t);
+    diag->compact_available = nio_diag_compact_count();
+    diag->compact_total = nio_diag_compact_total();
+    diag->compact_dropped = nio_diag_compact_dropped();
+    diag->compact_record_count =
+      nio_diag_compact_read(0, FUJI_IOCTL_NIO_DIAG_MAX_COMPACT_RECORDS,
+                            diag->compact);
     return OP_COMPLETE;
   }
 

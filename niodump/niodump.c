@@ -74,6 +74,23 @@ static void write_record(FILE *out, const nio_diag_record_t *rec)
   fputc('\n', out);
 }
 
+static void write_compact_record(FILE *out, unsigned idx,
+                                 const nio_diag_compact_record_t *rec)
+{
+  fprintf(out,
+          "compact[%u] tick_low=%u dt=%u cmd=%02X err=%u lsr=%02X reason=%u "
+          "isr_delta=%u bytes_delta=%u\n",
+          idx,
+          rec->tick_low,
+          rec->delta_ticks,
+          rec->command,
+          rec->error,
+          rec->lsr,
+          rec->slip_reason,
+          rec->isr_count_delta,
+          rec->isr_bytes_delta);
+}
+
 static int dump_log(int drive, const char *path, int clear_after)
 {
   FILE *out;
@@ -108,6 +125,14 @@ static int dump_log(int drive, const char *path, int clear_after)
               (unsigned long) diag.total,
               (unsigned long) diag.dropped,
               diag.record_size);
+      fprintf(out,
+              "NIO compact: available=%u total=%lu dropped=%lu record_size=%u\n",
+              diag.compact_available,
+              (unsigned long) diag.compact_total,
+              (unsigned long) diag.compact_dropped,
+              diag.compact_record_size);
+      for (idx = 0; idx < diag.compact_record_count; idx++)
+        write_compact_record(out, idx, &diag.compact[idx]);
     }
 
     if (diag.record_count == 0)

@@ -11,7 +11,8 @@
 #define NIO_TIMEOUT_SLOW (15 * 1000)
 #define NIO_MAX_RX       9216
 #define NIO_MAX_TX_PREFIX 32
-#define NIO_DIAG_RING    8
+#define NIO_DIAG_RING    4
+#define NIO_DIAG_COMPACT_RING 24
 
 enum {
   SLIP_END     = 0xC0,
@@ -37,10 +38,18 @@ static uint8_t tx_prefix[NIO_MAX_TX_PREFIX];
 static uint8_t rx_payload[NIO_MAX_RX];
 static nio_header_t rx_header;
 static nio_diag_record_t nio_diag_ring[NIO_DIAG_RING];
+static nio_diag_compact_record_t nio_diag_compact_ring[NIO_DIAG_COMPACT_RING];
 static uint16_t nio_diag_head;
 static uint16_t nio_diag_used;
 static uint32_t nio_diag_seq;
 static uint32_t nio_diag_drop_count;
+static uint16_t nio_diag_compact_head;
+static uint16_t nio_diag_compact_used;
+static uint32_t nio_diag_compact_seq;
+static uint32_t nio_diag_compact_drop_count;
+static uint32_t nio_diag_compact_last_tick;
+static uint16_t nio_diag_compact_last_isr_count;
+static uint16_t nio_diag_compact_last_isr_bytes;
 static uint16_t nio_last_tx_encoded_len;
 static uint8_t nio_last_pre_flush_lsr;
 static uint8_t nio_last_post_tx_lsr;
@@ -69,14 +78,17 @@ static void nio_diag_log(uint8_t attempt, uint8_t max_attempts,
                          uint16_t reply_capacity, uint16_t timeout_ms)
 {
   nio_diag_record_t *rec;
+  nio_diag_compact_record_t *crec;
   uint16_t idx;
+  uint32_t tick;
 
   idx = nio_diag_head;
   rec = &nio_diag_ring[idx];
 
   _fmemset(rec, 0, sizeof(*rec));
   rec->seq = ++nio_diag_seq;
-  rec->tick = bios_tick();
+  tick = bios_tick();
+  rec->tick = tick;
   rec->event = NIO_DIAG_EVENT_ATTEMPT;
   rec->attempt = attempt;
   rec->max_attempts = max_attempts;
@@ -97,6 +109,27 @@ static void nio_diag_log(uint8_t attempt, uint8_t max_attempts,
 
   if (request_prefix)
     _fmemcpy(rec->request_prefix, request_prefix, NIO_DIAG_REQ_PREFIX);
+
+  idx = nio_diag_compact_head;
+  crec = &nio_diag_compact_ring[idx];
+  crec->tick_low = (uint16_t) tick;
+  crec->delta_ticks = (uint16_t) (tick - nio_diag_compact_last_tick);
+  crec->isr_count_delta = port_rx_isr_count - nio_diag_compact_last_isr_count;
+  crec->isr_bytes_delta = port_rx_isr_bytes - nio_diag_compact_last_isr_bytes;
+  crec->command = command;
+  crec->error = nio_last_error;
+  crec->lsr = nio_last_lsr;
+  crec->slip_reason = port_slip_last_reason;
+  nio_diag_compact_last_tick = tick;
+  nio_diag_compact_last_isr_count = port_rx_isr_count;
+  nio_diag_compact_last_isr_bytes = port_rx_isr_bytes;
+
+  nio_diag_compact_head = (uint16_t) ((nio_diag_compact_head + 1) % NIO_DIAG_COMPACT_RING);
+  nio_diag_compact_seq++;
+  if (nio_diag_compact_used < NIO_DIAG_COMPACT_RING)
+    nio_diag_compact_used++;
+  else
+    nio_diag_compact_drop_count++;
 
   nio_diag_head = (uint16_t) ((nio_diag_head + 1) % NIO_DIAG_RING);
   if (nio_diag_used < NIO_DIAG_RING)
@@ -142,12 +175,57 @@ uint16_t nio_diag_read(uint16_t start, uint16_t max_records,
   return count;
 }
 
+uint16_t nio_diag_compact_count(void)
+{
+  return nio_diag_compact_used;
+}
+
+uint32_t nio_diag_compact_total(void)
+{
+  return nio_diag_compact_seq;
+}
+
+uint32_t nio_diag_compact_dropped(void)
+{
+  return nio_diag_compact_drop_count;
+}
+
+uint16_t nio_diag_compact_read(uint16_t start, uint16_t max_records,
+                               nio_diag_compact_record_t far *records)
+{
+  uint16_t count;
+  uint16_t first;
+  uint16_t idx;
+
+  if (start >= nio_diag_compact_used || !records)
+    return 0;
+
+  count = nio_diag_compact_used - start;
+  if (count > max_records)
+    count = max_records;
+
+  first = (nio_diag_compact_head + NIO_DIAG_COMPACT_RING - nio_diag_compact_used) % NIO_DIAG_COMPACT_RING;
+  for (idx = 0; idx < count; idx++) {
+    uint16_t ring_idx = (uint16_t) ((first + start + idx) % NIO_DIAG_COMPACT_RING);
+    _fmemcpy(&records[idx], &nio_diag_compact_ring[ring_idx],
+             sizeof(nio_diag_compact_record_t));
+  }
+  return count;
+}
+
 void nio_diag_clear(void)
 {
   nio_diag_head = 0;
   nio_diag_used = 0;
   nio_diag_seq = 0;
   nio_diag_drop_count = 0;
+  nio_diag_compact_head = 0;
+  nio_diag_compact_used = 0;
+  nio_diag_compact_seq = 0;
+  nio_diag_compact_drop_count = 0;
+  nio_diag_compact_last_tick = 0;
+  nio_diag_compact_last_isr_count = port_rx_isr_count;
+  nio_diag_compact_last_isr_bytes = port_rx_isr_bytes;
 }
 
 static bool nio_fail(uint8_t error, uint16_t rx_len, uint16_t expected_len)

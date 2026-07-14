@@ -19,6 +19,8 @@
 	PUBLIC	_port_slip_last_reason
 	PUBLIC	_port_slip_last_lsr
 	PUBLIC	_port_rx_isr
+	PUBLIC	_port_rx_isr_count
+	PUBLIC	_port_rx_isr_bytes
 	PUBLIC	_port_flush_rx
 	PUBLIC	_port_wait_tx_empty
 
@@ -31,6 +33,8 @@ _port_slip_last_lsr DB 0
 _port_rx_head DB 0
 _port_rx_tail DB 0
 _port_rx_buf DB 16 dup(?)
+_port_rx_isr_count DW 0
+_port_rx_isr_bytes DW 0
 
 	.code
 
@@ -104,6 +108,8 @@ _port_rx_isr PROC NEAR
 	push	cs
 	pop	ds
 
+	inc	word ptr _port_rx_isr_count
+
 	mov	dx, _port_uart_base
 	add	dx, UART_LSR_OFF
 
@@ -122,6 +128,7 @@ rx_isr_no_lsr_error:
 	mov	dx, _port_uart_base
 	add	dx, UART_RBR_OFF
 	in	al, dx
+	inc	word ptr _port_rx_isr_bytes
 
 	mov	ah, _port_rx_head
 	inc	ah
