@@ -9,6 +9,7 @@
 #define NIO_TIMEOUT_SLOW (15 * 1000)
 #define NIO_MAX_RX       9216
 #define NIO_MAX_TX_PREFIX 32
+#define NIO_MAX_STALE_RESPONSES 2
 
 enum {
   SLIP_END     = 0xC0,
@@ -132,6 +133,7 @@ static bool nio_call_once(uint8_t device, uint8_t command,
   uint16_t rx_payload_len;
   uint16_t payload_offset;
   uint16_t timeout;
+  uint8_t stale_count = 0;
   uint8_t status;
 
   if (response) {
@@ -148,6 +150,8 @@ static bool nio_call_once(uint8_t device, uint8_t command,
   port_wait_tx_empty();
 
   timeout = (device == NIO_DEVICEID_NETWORK) ? nio_network_timeout_ms : NIO_TIMEOUT_SLOW;
+
+read_response:
   rx_len = port_getbuf_slip_dual(&rx_header, sizeof(rx_header),
                                  rx_payload, sizeof(rx_payload),
                                  timeout);
@@ -169,8 +173,11 @@ static bool nio_call_once(uint8_t device, uint8_t command,
         nio_calc_checksum(&rx_header, sizeof(rx_header), 0)) != checksum)
     return nio_fail(NIO_ERR_CHECKSUM, rx_len, rx_header.length);
 
-  if (rx_header.device != device || rx_header.command != command)
+  if (rx_header.device != device || rx_header.command != command) {
+    if (++stale_count <= NIO_MAX_STALE_RESPONSES)
+      goto read_response;
     return nio_fail(NIO_ERR_DEVICE_COMMAND, rx_len, rx_header.length);
+  }
 
   if ((rx_header.fields & 0x80) || (rx_header.fields & 0x07) != FUJI_FIELD_A1)
     return nio_fail(NIO_ERR_FIELDS, rx_len, rx_header.length);
