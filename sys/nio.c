@@ -3,6 +3,7 @@
  */
 
 #include "nio.h"
+#include "nio_protocol.h"
 #include "portio.h"
 #include <string.h>
 
@@ -18,22 +19,9 @@ enum {
   SLIP_ESC_ESC = 0xDD,
 };
 
-enum {
-  FUJI_FIELD_NONE = 0,
-  FUJI_FIELD_A1   = 1,
-};
-
-typedef struct {
-  uint8_t device;
-  uint8_t command;
-  uint16_t length;
-  uint8_t checksum;
-  uint8_t fields;
-} nio_header_t;
-
 static uint8_t tx_prefix[NIO_MAX_TX_PREFIX];
 static uint8_t rx_payload[NIO_MAX_RX];
-static nio_header_t rx_header;
+static nio_frame_header_t rx_header;
 uint8_t nio_last_error;
 uint8_t nio_last_status;
 uint16_t nio_last_rx_len;
@@ -93,16 +81,6 @@ static uint32_t get_u32le(const uint8_t far *p)
       | ((uint32_t) p[3] << 24);
 }
 
-static uint16_t nio_calc_checksum(const void far *ptr, uint16_t len, uint16_t seed)
-{
-  uint16_t idx, chk;
-  const uint8_t far *buf = (const uint8_t far *) ptr;
-
-  for (idx = 0, chk = seed; idx < len; idx++)
-    chk = ((chk + buf[idx]) >> 8) + ((chk + buf[idx]) & 0xFF);
-  return chk;
-}
-
 bool nio_status_ok(uint8_t status)
 {
   return status == NIO_STATUS_OK;
@@ -127,14 +105,13 @@ static bool nio_call_once(uint8_t device, uint8_t command,
                           void far *reply, uint16_t reply_capacity,
                           nio_response_t far *response)
 {
-  nio_header_t *tx = (nio_header_t *) tx_prefix;
-  uint16_t checksum;
+  nio_frame_header_t *tx = (nio_frame_header_t *) tx_prefix;
   uint16_t rx_len;
   uint16_t rx_payload_len;
-  uint16_t payload_offset;
   uint16_t timeout;
+  nio_parsed_response_t parsed;
+  uint8_t parse_error;
   uint8_t stale_count = 0;
-  uint8_t status;
 
   if (response) {
     response->status = NIO_STATUS_INTERNAL_ERROR;
@@ -157,45 +134,26 @@ read_response:
                                  timeout);
   nio_last_rx_len = rx_len;
   nio_last_lsr = port_slip_last_lsr;
-  if (rx_len < sizeof(rx_header)) {
-    nio_last_expected_len = sizeof(rx_header);
-    return nio_fail(nio_port_error(NIO_ERR_SHORT_FRAME), rx_len, sizeof(rx_header));
-  }
-  nio_last_expected_len = rx_header.length;
-  if (rx_len != rx_header.length)
-    return nio_fail(nio_port_error(NIO_ERR_LENGTH_MISMATCH), rx_len, rx_header.length);
 
-  rx_payload_len = rx_len - sizeof(rx_header);
-
-  checksum = rx_header.checksum;
-  rx_header.checksum = 0;
-  if ((uint8_t) nio_calc_checksum(rx_payload, rx_payload_len,
-        nio_calc_checksum(&rx_header, sizeof(rx_header), 0)) != checksum)
-    return nio_fail(NIO_ERR_CHECKSUM, rx_len, rx_header.length);
-
-  if (rx_header.device != device || rx_header.command != command) {
+  parse_error = nio_protocol_validate_response(&rx_header, rx_payload, rx_len,
+                                               device, command, reply_capacity,
+                                               &parsed);
+  nio_last_expected_len = parsed.expected_len;
+  if (parse_error == NIO_PROTO_ERR_DEVICE_COMMAND) {
     if (++stale_count <= NIO_MAX_STALE_RESPONSES)
       goto read_response;
-    return nio_fail(NIO_ERR_DEVICE_COMMAND, rx_len, rx_header.length);
+    return nio_fail(parse_error, rx_len, parsed.expected_len);
   }
+  if (parse_error != NIO_PROTO_OK)
+    return nio_fail(nio_port_error(parse_error), rx_len, parsed.expected_len);
 
-  if ((rx_header.fields & 0x80) || (rx_header.fields & 0x07) != FUJI_FIELD_A1)
-    return nio_fail(NIO_ERR_FIELDS, rx_len, rx_header.length);
-  if (rx_payload_len < 1)
-    return nio_fail(NIO_ERR_EMPTY_STATUS, rx_len, rx_header.length);
-
-  status = rx_payload[0];
-  nio_last_status = status;
-  payload_offset = 1;
-  rx_payload_len -= payload_offset;
-
-  if (rx_payload_len > reply_capacity)
-    return nio_fail(NIO_ERR_REPLY_TOO_LARGE, rx_len, rx_header.length);
+  nio_last_status = parsed.status;
+  rx_payload_len = parsed.payload_length;
   if (reply && rx_payload_len)
-    _fmemmove(reply, rx_payload + payload_offset, rx_payload_len);
+    _fmemmove(reply, rx_payload + parsed.payload_offset, rx_payload_len);
 
   if (response) {
-    response->status = status;
+    response->status = parsed.status;
     response->payload_length = rx_payload_len;
   }
 
@@ -207,7 +165,7 @@ bool nio_call(uint8_t device, uint8_t command,
               void far *reply, uint16_t reply_capacity,
               nio_response_t far *response)
 {
-  nio_header_t *tx = (nio_header_t *) tx_prefix;
+  nio_frame_header_t *tx = (nio_frame_header_t *) tx_prefix;
   uint16_t checksum;
   uint8_t attempt;
   uint8_t max_attempts;
@@ -216,11 +174,11 @@ bool nio_call(uint8_t device, uint8_t command,
   tx->command = command;
   tx->length = sizeof(*tx) + payload_length;
   tx->checksum = 0;
-  tx->fields = FUJI_FIELD_NONE;
+  tx->fields = NIO_PROTO_FIELD_NONE;
 
-  checksum = nio_calc_checksum(tx, sizeof(*tx), 0);
+  checksum = nio_protocol_checksum(tx, sizeof(*tx), 0);
   if (payload)
-    checksum = nio_calc_checksum(payload, payload_length, checksum);
+    checksum = nio_protocol_checksum(payload, payload_length, checksum);
   tx->checksum = (uint8_t) checksum;
 
   max_attempts = (uint8_t) (nio_transport_retries + 1);
@@ -349,20 +307,22 @@ bool nio_disk_write_sector(uint8_t slot, uint32_t lba,
   /* Build and send this request manually so sector data does not need to be
      copied into a second 16-bit DOS buffer. */
   {
-    nio_header_t *tx = (nio_header_t *) tx_prefix;
+    nio_frame_header_t *tx = (nio_frame_header_t *) tx_prefix;
     uint16_t checksum;
     uint16_t rx_len;
     uint16_t rx_payload_len;
+    nio_parsed_response_t parsed;
+    uint8_t parse_error;
 
     tx->device = NIO_DEVICEID_DISK;
     tx->command = NIO_DISK_CMD_WRITE_SECTOR;
     tx->length = sizeof(*tx) + sizeof(req_prefix) + buffer_length;
     tx->checksum = 0;
-    tx->fields = FUJI_FIELD_NONE;
+    tx->fields = NIO_PROTO_FIELD_NONE;
 
-    checksum = nio_calc_checksum(tx, sizeof(*tx), 0);
-    checksum = nio_calc_checksum(req_prefix, sizeof(req_prefix), checksum);
-    checksum = nio_calc_checksum(buffer, buffer_length, checksum);
+    checksum = nio_protocol_checksum(tx, sizeof(*tx), 0);
+    checksum = nio_protocol_checksum(req_prefix, sizeof(req_prefix), checksum);
+    checksum = nio_protocol_checksum(buffer, buffer_length, checksum);
     tx->checksum = (uint8_t) checksum;
 
     port_flush_rx();
@@ -376,21 +336,16 @@ bool nio_disk_write_sector(uint8_t slot, uint32_t lba,
 
     rx_len = port_getbuf_slip_dual(&rx_header, sizeof(rx_header),
                                    resp, sizeof(resp), NIO_TIMEOUT_SLOW);
-    if (rx_len < sizeof(rx_header) || rx_len != rx_header.length)
-      return false;
-    rx_payload_len = rx_len - sizeof(rx_header);
-    checksum = rx_header.checksum;
-    rx_header.checksum = 0;
-    if ((uint8_t) nio_calc_checksum(resp, rx_payload_len,
-          nio_calc_checksum(&rx_header, sizeof(rx_header), 0)) != checksum)
-      return false;
-    if (rx_header.device != NIO_DEVICEID_DISK || rx_header.command != NIO_DISK_CMD_WRITE_SECTOR)
-      return false;
-    if ((rx_header.fields & 0x80) || (rx_header.fields & 0x07) != FUJI_FIELD_A1 || rx_payload_len < 1)
+    parse_error = nio_protocol_validate_response(&rx_header, resp, rx_len,
+                                                 NIO_DEVICEID_DISK,
+                                                 NIO_DISK_CMD_WRITE_SECTOR,
+                                                 sizeof(resp), &parsed);
+    if (parse_error != NIO_PROTO_OK)
       return false;
 
-    nr.status = resp[0];
-    nr.payload_length = rx_payload_len - 1;
+    nr.status = parsed.status;
+    rx_payload_len = parsed.payload_length;
+    nr.payload_length = rx_payload_len;
     if (!nio_status_ok(nr.status) || nr.payload_length < 11 || resp[1] != NIO_DISK_VERSION)
       return false;
     if (bytes_written)
@@ -415,20 +370,22 @@ bool nio_disk_write_sectors(uint8_t slot, uint32_t lba, uint16_t count,
   put_u16le(&req_prefix[8], buffer_length);
 
   {
-    nio_header_t *tx = (nio_header_t *) tx_prefix;
+    nio_frame_header_t *tx = (nio_frame_header_t *) tx_prefix;
     uint16_t checksum;
     uint16_t rx_len;
     uint16_t rx_payload_len;
+    nio_parsed_response_t parsed;
+    uint8_t parse_error;
 
     tx->device = NIO_DEVICEID_DISK;
     tx->command = NIO_DISK_CMD_WRITE_SECTORS;
     tx->length = sizeof(*tx) + sizeof(req_prefix) + buffer_length;
     tx->checksum = 0;
-    tx->fields = FUJI_FIELD_NONE;
+    tx->fields = NIO_PROTO_FIELD_NONE;
 
-    checksum = nio_calc_checksum(tx, sizeof(*tx), 0);
-    checksum = nio_calc_checksum(req_prefix, sizeof(req_prefix), checksum);
-    checksum = nio_calc_checksum(buffer, buffer_length, checksum);
+    checksum = nio_protocol_checksum(tx, sizeof(*tx), 0);
+    checksum = nio_protocol_checksum(req_prefix, sizeof(req_prefix), checksum);
+    checksum = nio_protocol_checksum(buffer, buffer_length, checksum);
     tx->checksum = (uint8_t) checksum;
 
     port_flush_rx();
@@ -442,21 +399,16 @@ bool nio_disk_write_sectors(uint8_t slot, uint32_t lba, uint16_t count,
 
     rx_len = port_getbuf_slip_dual(&rx_header, sizeof(rx_header),
                                    resp, sizeof(resp), NIO_TIMEOUT_SLOW);
-    if (rx_len < sizeof(rx_header) || rx_len != rx_header.length)
-      return false;
-    rx_payload_len = rx_len - sizeof(rx_header);
-    checksum = rx_header.checksum;
-    rx_header.checksum = 0;
-    if ((uint8_t) nio_calc_checksum(resp, rx_payload_len,
-          nio_calc_checksum(&rx_header, sizeof(rx_header), 0)) != checksum)
-      return false;
-    if (rx_header.device != NIO_DEVICEID_DISK || rx_header.command != NIO_DISK_CMD_WRITE_SECTORS)
-      return false;
-    if ((rx_header.fields & 0x80) || (rx_header.fields & 0x07) != FUJI_FIELD_A1 || rx_payload_len < 1)
+    parse_error = nio_protocol_validate_response(&rx_header, resp, rx_len,
+                                                 NIO_DEVICEID_DISK,
+                                                 NIO_DISK_CMD_WRITE_SECTORS,
+                                                 sizeof(resp), &parsed);
+    if (parse_error != NIO_PROTO_OK)
       return false;
 
-    nr.status = resp[0];
-    nr.payload_length = rx_payload_len - 1;
+    nr.status = parsed.status;
+    rx_payload_len = parsed.payload_length;
+    nr.payload_length = rx_payload_len;
     if (!nio_status_ok(nr.status) || nr.payload_length < 13 || resp[1] != NIO_DISK_VERSION)
       return false;
     if (bytes_written)
